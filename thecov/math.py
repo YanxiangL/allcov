@@ -1,6 +1,7 @@
 """This module contains math functions for the covariance calculation"""
 
 import numpy as np
+import scipy
 
 
 def r2c_to_c2c_3d(fourier: np.ndarray) -> np.ndarray:
