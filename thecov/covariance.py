@@ -16,6 +16,9 @@ Example
 >>> covariance.compute_covariance_box()
 """
 
+# Treating types as strings to avoid circular imports. See https://www.python.org/dev/peps/pep-0563/#id4
+from __future__ import annotations
+
 import logging
 import itertools as itt
 
@@ -24,7 +27,11 @@ from typing import Any, Optional, Callable
 
 from . import base, geometry, math
 
-__all__ = ["GaussianCovariance", "TrispectrumCovariance", "SuperSampleCovariance"]
+__all__ = [
+    "GaussianCovariance",
+    "RegularTrispectrumCovariance",
+    "SuperSampleCovariance",
+]
 
 
 class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
@@ -36,7 +43,7 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
     """
 
-    def __init__(self, geometry=None):
+    def __init__(self, geometry: geometry.Geometry | None = None):
         base.PowerSpectrumMultipolesCovariance.__init__(self, geometry=geometry)
         self.logger = logging.getLogger("GaussianCovariance")
 
@@ -197,7 +204,7 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
 
         return self
 
-    def _build_covariance_survey(self, func: Any) -> np.ndarray:
+    def _build_covariance_survey(self, func: Callable) -> np.ndarray:
         """Build the covariance matrix for a survey geometry.
         Parameters
         ----------
@@ -553,7 +560,11 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         self.logger.info(
             f"alpha = sum_data_weights/sum_randoms_weights estimated from pypower is {self.alpha:.2f}"
         )
-        self.pk_renorm = self.geometry.I("22") / pypower.wnorm * naverage
+        I = getattr(self.geometry, "I", None)
+        assert I is not None, (
+            "Geometry must have an I(22) method to compute power spectrum normalization."
+        )
+        self.pk_renorm = I("22") / pypower.wnorm * naverage
         self.logger.info(
             f"Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization."
         )
@@ -568,7 +579,7 @@ class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
         Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
     """
 
-    def __init__(self, geometry=None):
+    def __init__(self, geometry: geometry.Geometry | None = None):
         base.PowerSpectrumMultipolesCovariance.__init__(self, geometry=geometry)
         self.logger = logging.getLogger("RegularTrispectrumCovariance")
 
@@ -576,7 +587,7 @@ class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
 
         self.calculator = PowerSpecCovFFT()
 
-    def set_kbins(self, kmin, kmax, dk, ells=(0, 2, 4)):
+    def set_kbins(self, kmin: float, kmax: float, dk: float, ells=(0, 2, 4)):  # type: ignore
         """Set the k-binning for the covariance matrix.
 
         Parameters
@@ -603,33 +614,39 @@ class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
 
         return self
 
-    def set_linear_matter_pk(self, pk_linear, k=None):
+    def set_linear_matter_pk(
+        self, pk_linear: Callable | np.ndarray, k: np.ndarray | None = None
+    ):
         """Set the input linear power spectrum to be used for the covariance calculation.
 
         Parameters
         ----------
         k : array_like
             Wavenumbers.
-        pk : array_like
+        pk : array_like or Callable
             Power spectrum.
         """
 
         if callable(pk_linear):
             self.pk_linear = pk_linear
-            self.calculator.pk_lin_spl = lambda logk: np.log(pk_linear(np.exp(logk)))
+            self.calculator.pk_lin_spl = lambda logk: np.log(pk_linear(np.exp(logk)))  # type: ignore
             self.calculator.decomp.compute(self.calculator.get_pk_lin)
         else:
             if k is None:
                 self.logger.error("k must be set if pk is not callable.")
+                raise ValueError("k must be set if pk is not callable.")
             if len(k) != len(pk_linear):
                 self.logger.error("k and pk must have the same length.")
+                raise ValueError("k and pk must have the same length.")
             if 0 in k:
                 self.logger.error("k must not contain zero.")
+                raise ValueError("k must not contain zero.")
 
             from scipy.interpolate import InterpolatedUnivariateSpline
 
+            # ext = 0 means it will extrapolate the power spectrum outside the range of k using the spline fit to the input power spectrum.
             self.calculator.pk_lin_spl = InterpolatedUnivariateSpline(
-                np.log(k), np.log(pk_linear), ext="extrapolate"
+                np.log(k), np.log(pk_linear), ext=0
             )
 
             self.calculator.decomp.compute(self.calculator.get_pk_lin)
@@ -637,8 +654,16 @@ class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
             self.pk_linear = self.calculator.get_pk_lin
 
     def set_params(
-        self, fgrowth, b1, b2=None, g2=None, b3=None, g3=None, g2x=None, g21=None
-    ):
+        self,
+        fgrowth: float,
+        b1: float,
+        b2: float | None = None,
+        g2: float | None = None,
+        b3: float | None = None,
+        g3: float | None = None,
+        g2x: float | None = None,
+        g21: float | None = None,
+    ) -> RegularTrispectrumCovariance:
         """Set the bias parameters to be used for the covariance calculation. If the optional
            parameters are not set, will use expressions for non-local bias (g_i) from local
            lagrangian approximation and non-linear bias (b_i) from peak-background split fit
@@ -665,6 +690,10 @@ class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
             gamma_{21} non-local  bias.
         """
 
+        # See equation 102 of https://arxiv.org/pdf/1910.02914 for the local Lagrangian approximation for the non-local bias parameters,
+        # and equation 2.35 of https://arxiv.org/pdf/1511.01096 for the peak-background split fit for the non-linear bias parameters.
+        # The expressions for b2 and b3 are rescaled using Appendix C.2 of https://arxiv.org/pdf/1812.03208 to match the normalization of the
+        # power spectrum used in this code and the correct bias basis.
         if g2 is None:
             g2 = -2 / 7 * (b1 - 1)
         if g3 is None:
@@ -703,7 +732,7 @@ class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
 
         return self
 
-    def _compute_covariance_box(self):
+    def _compute_covariance_box(self) -> RegularTrispectrumCovariance:
         """Compute the covariance matrix for a box geometry.
 
         Returns
@@ -712,14 +741,17 @@ class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
             Covariance matrix.
         """
 
-        self.calculator.vol = self.geometry.volume
-        self.calculator.ndens = self.geometry.nbar
+        volume = getattr(self.geometry, "volume", None)
+        nbar = getattr(self.geometry, "nbar", None)
+
+        self.calculator.vol = volume
+        self.calculator.ndens = nbar
 
         self._build_covariance()
 
         return self
 
-    def _compute_covariance_survey(self):
+    def _compute_covariance_survey(self) -> RegularTrispectrumCovariance:
         """Compute the covariance matrix for a survey geometry.
 
         Returns
@@ -727,6 +759,8 @@ class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
         self : TrispectrumCovariance
             Covariance matrix.
         """
+
+        assert self.geometry is not None, "Geometry must be set to compute covariance."
 
         self.calculator.vol = self.geometry.I("22") ** 2 / self.geometry.I("44")
         self.calculator.ndens = self.geometry.I("44") / self.geometry.I("34")
@@ -774,11 +808,11 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
         Geometry of the survey. Can be a BoxGeometry or a SurveyGeometry object.
     """
 
-    def __init__(self, geometry=None):
+    def __init__(self, geometry: geometry.Geometry | None = None):
         base.PowerSpectrumMultipolesCovariance.__init__(self, geometry=geometry)
         self.logger = logging.getLogger("SuperSampleCovariance")
 
-    def set_kbins(self, kmin, kmax, dk, ells=(0, 2, 4)):
+    def set_kbins(self, kmin, kmax, dk, ells=(0, 2, 4)):  # type: ignore
         """Set the k-binning for the covariance matrix.
 
         Parameters
@@ -796,15 +830,23 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
 
         return self
 
-    def set_linear_matter_pk(self, pk_linear, k=None, dPk=None):
+    def set_linear_matter_pk(
+        self,
+        pk_linear: Callable | np.ndarray,
+        k: np.ndarray | None = None,
+        dPk: Callable | np.ndarray | None = None,
+    ):
         """Set the input linear power spectrum to be used for the covariance calculation.
 
         Parameters
         ----------
-        k : array_like
+        k : array_like | None
             Wavenumbers.
-        pk : array_like
+        pk : array_like | Callable
             Power spectrum.
+        dPk : array_like | Callable | None
+            Derivative of the power spectrum. If None, will be computed using the input power spectrum. If pk is callable,
+            dPk must also be callable if provided.
         """
 
         kmid = self.kmid
@@ -815,22 +857,32 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
         if callable(pk_linear):
             self.pk_linear = pk_linear
             if dPk is None:
-                from scipy.misc import derivative
+                # from scipy.misc import derivative
+                # sp.misc.derivative is deprecated in scipy 1.10, in newer versions of scipy, use scipy.differentiate.derivative instead
+                from scipy.differentiate import derivative
 
-                dPk = derivative(self.pk_linear, kmid, dx=1e-4)
+                # dPk = derivative(self.pk_linear, kmid, dx=1e-4)
+                dPk = derivative(self.pk_linear, kmid, initial_step=1e-4).x
         else:
-            if len(k) != len(pk_linear):
+            # assert k is not None, "k must be set if pk is not callable."
+            if k is None or len(k) != len(pk_linear):
                 self.logger.error("k and pk must have the same length.")
 
             from scipy.interpolate import InterpolatedUnivariateSpline
 
             self.pk_linear = InterpolatedUnivariateSpline(k, pk_linear)
             if dPk is None:
-                dPk = self.pk_linear.derivative()(kmid)
+                dPk = np.asarray(self.pk_linear.derivative()(kmid))
 
         self._dlnPk = dPk * kmid / self.pk_linear(kmid)
 
-    def set_params(self, fgrowth, b1, b2=None, g2=None):
+    def set_params(
+        self,
+        fgrowth: float,
+        b1: float,
+        b2: float | None = None,
+        g2: float | None = None,
+    ) -> SuperSampleCovariance:
         """Set the bias parameters to be used for the covariance calculation. If the optional
            parameters are not set, will use expressions for non-local bias (g_i) from local
            lagrangian approximation and non-linear bias (b_i) from peak-background split fit
@@ -852,6 +904,10 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
             gamma_2 non-local bias.
         """
 
+        # The local Lagrangian approximation for the non-local bias parameters is g2 = -2/7 (b1 - 1), and the peak-background split fit for the
+        # non-linear bias parameters is b2 = 0.412 - 2.143 b1 + 0.929 b1^2 + 0.008 b1^3 from Arxiv 1511.01096 rescaled
+        # using Appendix C.2 of arXiv:1812.03208 to match the normalization of the power spectrum used in this code and the correct bias basis.
+
         if g2 is None:
             g2 = -2 / 7 * (b1 - 1)
         if b2 is None:
@@ -866,7 +922,7 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
 
         return self
 
-    def Z12Multipoles(self, ell_kernel, ell_legendre):
+    def Z12Multipoles(self, ell_kernel: int, ell_legendre: int) -> np.ndarray:
         b1, be, b2, g2 = (
             self.params["b1"],
             self.params["f"] / self.params["b1"],
@@ -962,6 +1018,9 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
                     )
                 ) / (2695.0 * b1**2)
 
+        else:
+            raise ValueError("ell_kernel must be 0, 2, or 4.")
+
         Z12 = np.vectorize(Z12)
         legendre = math.legendre(ell_legendre)
 
@@ -983,7 +1042,7 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
             Covariance matrix.
         """
 
-        self.logger.debug(f"Calculating the variance of super-survey modes.")
+        self.logger.debug("Calculating the variance of super-survey modes.")
 
         b1 = self.params["b1"]
         b2 = self.params["b2"]
@@ -992,6 +1051,8 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
         # Convolving the window function power with linear power spectrum to
         # obtain the variance of super-survey modes. Done for all multipole combinations.
         from scipy.integrate import quad
+
+        assert self.geometry is not None, "Geometry must be set to compute covariance."
 
         sigmas = b1**2 * np.array(
             [
@@ -1021,7 +1082,7 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
         self.sigma10x10 = sigma10x10
         self.sigma22x10 = sigma22x10
 
-        Plin = self.pk_linear(self.kmid)
+        Plin = np.array(self.pk_linear(self.kmid))
 
         # shape here is (ell)
         Z1 = np.array(
