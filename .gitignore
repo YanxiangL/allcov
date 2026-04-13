@@ -25,4 +25,5 @@ __pycache__/
 .vscode/
 *.code-workspace
 .sourcery.yaml
+*.Identifier
 
