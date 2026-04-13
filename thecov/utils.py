@@ -1,16 +1,20 @@
-"""This module contains utility functions for thecov.
-"""
-import os, functools
+"""This module contains utility functions for thecov."""
 
-def mkdir(dirname):
+import os
+import functools
+from typing import Iterator, Callable
+
+
+def mkdir(dirname: str):
     """Try to create ``dirname`` and catch :class:`OSError`."""
     try:
         os.makedirs(dirname)  # MPI...
     except OSError:
         return
-    
+
+
 # python's enumerate but with a custom step = 2
-def enum2(xs, start=0, step=2):
+def enum2(xs: list, start: int = 0, step: int = 2):
     """Enumerate a sequence with a custom step.
 
     Parameters
@@ -31,7 +35,8 @@ def enum2(xs, start=0, step=2):
         yield (start, x)
         start += step
 
-def limit(iterable, count):
+
+def limit(iterable: Iterator, count: int):
     """
     Limit number of iterated elements from an iterable.
     count -- is the maximum number of elements to iterate through
@@ -40,8 +45,9 @@ def limit(iterable, count):
         yield next(iterable)
         count -= 1
 
-def cache_method(func):
-    '''Decorator to cache the result of a method.
+
+def cache_method(func: Callable) -> Callable:
+    """Decorator to cache the result of a method.
 
     Parameters
     ----------
@@ -52,26 +58,26 @@ def cache_method(func):
     -------
     callable
         Cached method.
-    '''
+    """
 
     @functools.wraps(func)
     def cached_func(self, *args, **kwargs):
-        if not hasattr(self, '_cache'):
+        if not hasattr(self, "_cache"):
             self._cache = {}
-        
+
         if func.__name__ not in self._cache:
             self._cache[func.__name__] = {}
-        
+
         if len(args) + len(kwargs) == 1:
             key = args[0] if args else next(iter(kwargs.values()))
         else:
             key = hash((args, frozenset(kwargs.items())))
 
         cache = self._cache[func.__name__]
-        
+
         if key not in cache:
             cache[key] = func(self, *args, **kwargs)
-    
+
         return cache[key]
 
     return cached_func
