@@ -1,0 +1,28 @@
+[project]
+name = "thecov"
+version = "0.1.0"
+description = "A python package to compute analytic covariance matrices based on Wadekar & Scoccimarro 2019 (arXiv:1910.02914)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cython>=3.2.4",
+    "mockfactory",
+    "mpi4py>=4.1.1",
+    "numpy>=2.4.4",
+    "powercovfft",
+    "pypower",
+    "scipy>=1.17.1",
+    "tqdm>=4.67.3",
+]
+
+[tool.uv.sources]
+mockfactory = { git = "https://github.com/cosmodesi/mockfactory.git" }
+pypower = { git = "https://github.com/cosmodesi/pypower.git" }
+powercovfft = { git = "https://github.com/archaeo-pteryx/PowerSpecCovFFT.git" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["thecov"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
