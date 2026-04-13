@@ -5,13 +5,18 @@ description = "A python package to compute analytic covariance matrices based on
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "cosmoprimo",
     "cython>=3.2.4",
+    "healpy>=1.19.0",
     "mockfactory",
     "mpi4py>=4.1.1",
+    "numexpr>=2.14.1",
     "numpy>=2.4.4",
     "powercovfft",
+    "pycorr",
     "pypower",
     "scipy>=1.17.1",
+    "sympy>=1.14.0",
     "tqdm>=4.67.3",
 ]
 
@@ -19,6 +24,8 @@ dependencies = [
 mockfactory = { git = "https://github.com/cosmodesi/mockfactory.git" }
 pypower = { git = "https://github.com/cosmodesi/pypower.git" }
 powercovfft = { git = "https://github.com/archaeo-pteryx/PowerSpecCovFFT.git" }
+cosmoprimo = { git = "https://github.com/cosmodesi/cosmoprimo.git" }
+pycorr = { git = "https://github.com/cosmodesi/pycorr.git" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["thecov"]
