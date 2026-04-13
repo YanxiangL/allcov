@@ -113,50 +113,57 @@ class Covariance:
             "nearest": computes the nearest positive definite matrix using the Higham 1988 algorithm https://doi.org/10.1016/0024-3795(88)90223-6. See stackoverflow discussion for implementation details: https://stackoverflow.com/questions/43238173/python-convert-matrix-to-positive-semi-definite
         """
         eigvals, eigvecs = self.eig
-        if mode == "zero":
-            eigvals[eigvals < 0] = 0
-        elif mode == "flip":
-            eigvals = np.abs(eigvals)
-        elif mode == "minpos":
-            eigvals[eigvals < 0] = min(eigvals[eigvals > 0])
-        elif mode == "nearest":
-            assert self.cov is not None, "Covariance matrix is not set."
-            # Computing the nearest symmetric positive definite matrix using the Higham 1988 algorithm https://doi.org/10.1016/0024-3795(88)90223-6.
-            # See stackoverflow discussion for implementation details: https://stackoverflow.com/questions/43238173/python-convert-matrix-to-positive-semi-definite
-            B = (self.cov + self.cov.T) / 2
-            _, S, V = np.linalg.svd(B)
-            H = np.dot(V.T * S, V)
-            A2 = (B + H) / 2
-            A3 = (A2 + A2.T) / 2
-            try:
-                _ = np.linalg.cholesky(A3)
-                isPD = True
-            except np.linalg.LinAlgError:
-                isPD = False
-            if isPD:
-                self.cov = A3
+        # Only regularize if there are negative eigenvalues, otherwise keep the original covariance matrix to avoid numerical issues
+        # from eigendecomposition and reconstruction.
+        if not np.all(eigvals >= 0):
+            if mode == "zero":
+                eigvals[eigvals < 0] = 0
+            elif mode == "flip":
+                eigvals = np.abs(eigvals)
+            elif mode == "minpos":
+                eigvals[eigvals < 0] = min(eigvals[eigvals > 0])
+            elif mode == "nearest":
+                assert self.cov is not None, "Covariance matrix is not set."
+                # Computing the nearest symmetric positive definite matrix using the Higham 1988 algorithm https://doi.org/10.1016/0024-3795(88)90223-6.
+                # See stackoverflow discussion for implementation details: https://stackoverflow.com/questions/43238173/python-convert-matrix-to-positive-semi-definite
+                B = (self.cov + self.cov.T) / 2
+                _, S, V = np.linalg.svd(B)
+                H = np.dot(V.T * S, V)
+                A2 = (B + H) / 2
+                A3 = (A2 + A2.T) / 2
+                try:
+                    _ = np.linalg.cholesky(A3)
+                    isPD = True
+                except np.linalg.LinAlgError:
+                    isPD = False
+                if isPD:
+                    self.cov = A3
+                else:
+                    spacing = np.spacing(np.linalg.norm(self.cov))
+                    Identity = np.eye(self.cov.shape[0])
+                    k = 1
+                    while not isPD:
+                        min_eig = np.min(np.real(np.linalg.eigvals(A3)))
+                        A3 += Identity * (-min_eig * k**2 + spacing)
+                        try:
+                            _ = np.linalg.cholesky(A3)
+                            isPD = True
+                        except np.linalg.LinAlgError:
+                            isPD = False
+                        k += 1
+
+                    self.cov = A3
             else:
-                spacing = np.spacing(np.linalg.norm(self.cov))
-                I = np.eye(self.cov.shape[0])
-                k = 1
-                while not isPD:
-                    min_eig = np.min(np.real(np.linalg.eigvals(A3)))
-                    A3 += I * (-min_eig * k**2 + spacing)
-                    try:
-                        _ = np.linalg.cholesky(A3)
-                        isPD = True
-                    except np.linalg.LinAlgError:
-                        isPD = False
-                    k += 1
+                raise ValueError(
+                    f"Mode {mode} not recognized. Supported modes are zero, flip, minpos, nearest."
+                )
 
-                self.cov = A3
+            if mode in ["zero", "flip", "minpos"]:
+                self.cov = np.einsum(
+                    "ij,jk,kl->il", eigvecs, np.diag(eigvals), eigvecs.T
+                )
         else:
-            raise ValueError(
-                f"Mode {mode} not recognized. Supported modes are zero, flip, minpos, nearest."
-            )
-
-        if mode in ["zero", "flip", "minpos"]:
-            self.cov = np.einsum("ij,jk,kl->il", eigvecs, np.diag(eigvals), eigvecs.T)
+            self.cov = self.cov
 
     def regularized(self) -> "Covariance":
         """Returns a regularized copy of the covariance matrix."""
@@ -180,11 +187,6 @@ class Covariance:
         assert self.cov is not None, "Covariance matrix is not set."
         return Covariance(self.cov + (y.cov if isinstance(y, Covariance) else y))
 
-    def __neg__(self) -> "Covariance":
-        """Returns a new Covariance instance with the sign of the matrix flipped."""
-        assert self.cov is not None, "Covariance matrix is not set."
-        return Covariance(-self.cov)
-
     def __sub__(self, y: "Covariance |float|int") -> "Covariance":
         """Subtracts another covariance matrix or a scalar from the covariance matrix.
 
@@ -198,7 +200,7 @@ class Covariance:
         Covariance
             The resulting covariance matrix after subtraction.
         """
-        return self.__add__(-y)
+        return self.__add__(y * -1)
 
     def __mul__(self, y: "float|int") -> "Covariance":
         """Multiplies the covariance matrix by a scalar.
@@ -347,7 +349,7 @@ class Covariance:
             return cls(data["covariance"])
 
     @classmethod
-    def loadtxt(cls: type["Covariance"], *args: Any, **kwargs: Any) -> "Covariance":
+    def loadtxt(cls: Any, *args: Any, **kwargs: Any) -> "Covariance":
         """Loads the covariance from a text file with a specified filename.
 
         Parameters
@@ -366,7 +368,7 @@ class Covariance:
         return cls.from_array(np.loadtxt(*args, **kwargs))
 
     @classmethod
-    def from_array(cls: type["Covariance"], a: np.ndarray) -> "Covariance":
+    def from_array(cls: Any, a: np.ndarray) -> "Covariance":
         """Creates a Covariance object from a numpy array.
 
         Parameters
@@ -425,7 +427,7 @@ class MultipoleCovariance(Covariance):
         self, y: "MultipoleCovariance |Covariance |float|int"
     ) -> "MultipoleCovariance":
         """Subtracts another covariance matrix or a scalar from the covariance matrix."""
-        return self.__add__(-y)
+        return self.__add__(y * -1)
 
     def __mul__(self, y: float | int) -> "MultipoleCovariance":
         """Multiplies the covariance matrix by a scalar."""
@@ -487,7 +489,11 @@ class MultipoleCovariance(Covariance):
         return sorted(self._ells)
 
     def get_ell_cov(
-        self, l1: int, l2: int, force_return: bool | float = False, cls=Covariance
+        self,
+        l1: int,
+        l2: int,
+        force_return: bool | float = False,
+        cls: Any = Covariance,
     ) -> Optional[Covariance]:
         """Returns the covariance matrix for a given pair of multipoles.
 
@@ -522,8 +528,8 @@ class MultipoleCovariance(Covariance):
             return cls(np.zeros(self._mshape))
 
     def set_ell_cov(
-        self, l1: int, l2: int, cov: Covariance | np.ndarray, cls=Covariance
-    ) -> Covariance:
+        self, l1: int, l2: int, cov: Covariance | np.ndarray, cls: Any = Covariance
+    ):
         """Sets the covariance matrix for a given pair of multipoles.
 
         Parameters
@@ -828,7 +834,7 @@ class FourierBinned:
         return None
 
     @property
-    def nmodes(self) -> np.ndarray:
+    def nmodes(self) -> np.ndarray | float:
         """This function calculates the number of modes per k-bin shell. If nmodes was not provided, it is
         estimated from the volume of each shell.
 
@@ -840,7 +846,9 @@ class FourierBinned:
 
         if self._nmodes is not None:
             return self._nmodes
-
+        assert self.volume is not None, (
+            "Volume is not set. Cannot compute number of modes. Please set the volume or provide the number of modes directly."
+        )
         return math.nmodes(self.volume, self.kedges[:-1], self.kedges[1:])
 
     @nmodes.setter
