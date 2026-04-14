@@ -1,14 +1,12 @@
 """Module containing basic classes to deal with covariance matrices."""
 
 import os
-import time
+import itertools as itt
 import copy
-from typing import Callable, Any
 
 import numpy as np
-import scipy
 
-from . import utils, math
+from . import utils, math, geometry
 import logging
 from typing import Any, Optional
 
@@ -26,19 +24,17 @@ class Covariance:
     """A class that represents a covariance matrix.
     Implements basic operations such as correlation matrix computation, etc.
     """
-    """
 
     def __init__(self, covariance: None | np.ndarray = None):
         """Initializes a Covariance object.
 
         Parameters
         ----------
-        covariance : numpy.ndarray | None
+        covariance : numpy.ndarray
             (n,n) numpy array with elements corresponding to the covariance.
         """
-        """
 
-        self._cov = covariance
+        self._covariance = covariance
 
     @property
     def cov(self):
@@ -46,12 +42,11 @@ class Covariance:
 
         Returns
         -------
-        numpy.ndarray | None
+        numpy.ndarray
             (n,n) numpy array corresponding to the elements of the covariance matrix.
         """
-        """
 
-        return self._cov
+        return self._covariance
 
     @cov.setter
     def cov(self, covariance: None | np.ndarray):
@@ -59,15 +54,13 @@ class Covariance:
 
         Parameters
         ----------
-        covariance : numpy.ndarray | None
+        covariance : numpy.ndarray
             (n,n) numpy array with elements corresponding to the covariance.
         """
 
-        self._cov = covariance
+        self._covariance = covariance
 
     @property
-    def cor(self) -> np.ndarray:
-        """Returns the correlation matrix.
     def cor(self) -> np.ndarray:
         """Returns the correlation matrix.
 
@@ -78,7 +71,6 @@ class Covariance:
         -------
         numpy.ndarray
             (n,n) numpy array corresponding to the elements of the correlation matrix.
-        """
         """
 
         cov = self.cov
@@ -93,8 +85,6 @@ class Covariance:
 
     def symmetrize(self):
         """Symmetrizes the covariance matrix in place."""
-        assert self.cov is not None, "Covariance matrix is not set."
-        self.cov = (self.cov + self.cov.T) / 2
         assert self.cov is not None, "Covariance matrix is not set."
         self.cov = (self.cov + self.cov.T) / 2
 
@@ -253,7 +243,6 @@ class Covariance:
         Covariance
             Covariance object corresponding to the transpose of the covariance matrix.
         """
-        """
 
         obj = copy.deepcopy(self)
         assert obj.cov is not None, "Covariance matrix is not set."
@@ -273,7 +262,6 @@ class Covariance:
 
         assert self.cov is not None, "Covariance matrix is not set."
 
-        assert self.cov is not None, "Covariance matrix is not set."
         return self.cov.shape
 
     @property
@@ -298,15 +286,11 @@ class Covariance:
                 column eigenvectors[:,i] is the eigenvector corresponding to
                 the eigenvalue eigenvalues[i].
         """
-        """
 
-        assert self.cov is not None, "Covariance matrix is not set."
         assert self.cov is not None, "Covariance matrix is not set."
         return np.linalg.eig(self.cov)
 
     @property
-    def eigvals(self) -> np.ndarray:
-        """Compute the eigenvalues of the covariance.
     def eigvals(self) -> np.ndarray:
         """Compute the eigenvalues of the covariance.
 
@@ -317,9 +301,7 @@ class Covariance:
             They are not necessarily ordered, nor are they necessarily
             real for real matrices.
         """
-        """
 
-        assert self.cov is not None, "Covariance matrix is not set."
         assert self.cov is not None, "Covariance matrix is not set."
         return np.linalg.eigvals(self.cov)
 
@@ -330,7 +312,6 @@ class Covariance:
         -------
         filename : string
             The name of the file where the covariance matrix will be saved.
-        """
         """
         utils.mkdir(os.path.dirname(filename))
         assert self.cov is not None, "Covariance matrix is not set."
@@ -383,7 +364,6 @@ class Covariance:
         Covariance
             Covariance object.
         """
-        """
 
         return cls.from_array(np.loadtxt(*args, **kwargs))
 
@@ -401,13 +381,11 @@ class Covariance:
         Covariance
             Covariance object.
         """
-        """
 
         return cls(covariance=a)
 
 
 class MultipoleCovariance(Covariance):
-    """A class to represent a covariance matrix for a set of multipoles.
     """A class to represent a covariance matrix for a set of multipoles.
 
     Attributes
@@ -416,7 +394,6 @@ class MultipoleCovariance(Covariance):
         The covariance matrix.
     cor : numpy.ndarray
         The correlation matrix.
-    """
     """
 
     def __init__(self):
@@ -638,11 +615,9 @@ class MultipoleCovariance(Covariance):
         func : function
             The function to be applied to each covariance matrix.
         """
-        """
 
         for (l1, l2), cov in self._multipole_covariance.items():
             self.set_ell_cov(l1, l2, func(cov))
-
 
         return self
 
@@ -652,18 +627,19 @@ class MultipoleCovariance(Covariance):
 
         Parameters
         ----------
-        cov : numpy.ndarray
+        cov_array
             (n,n) numpy array with elements corresponding to the covariance.
+        ells
+            the multipoles for which the covariance matrix is defined.
 
         Returns
         -------
         MultipoleCovariance
             A MultipoleCovariance object.
         """
-        """
 
         cov = cls()
-        cov.cov = cov
+        cov.set_full_cov(*args, **kwargs)
 
         return cov
 
@@ -726,15 +702,14 @@ class FourierBinned:
             The number of modes to be used in the calculation. It is an optional parameter.
             If omitted, it is calculated from the volume of spherical shells.
         """
-        """
 
         self.dk = dk
         self.kmax = kmax
         self.kmin = kmin
 
+        self._nmodes = nmodes
+
     @property
-    def is_kbins_set(self) -> bool:
-        """Check if k-bins were defined.
     def is_kbins_set(self) -> bool:
         """Check if k-bins were defined.
 
@@ -750,21 +725,16 @@ class FourierBinned:
     @property
     def kbins(self) -> int:
         """Returns the total number of k-bins.
-    def kbins(self) -> int:
-        """Returns the total number of k-bins.
 
         Returns
         -------
         int
             The total number of k-bins.
         """
-        """
 
         return len(self.kmid)
 
     @property
-    def kmid(self) -> np.ndarray:
-        """
     def kmid(self) -> np.ndarray:
         """
         Returns the midpoints of the k-bins.
@@ -785,8 +755,6 @@ class FourierBinned:
     @property
     def kavg(self) -> np.ndarray:
         """
-    def kavg(self) -> np.ndarray:
-        """
         Returns the average k of the k-bins. Assumes spherical approximation to
         integrate k-modes, which fails for small k.
 
@@ -801,17 +769,8 @@ class FourierBinned:
             * (self.kedges[1:] ** 4 - self.kedges[:-1] ** 4)
             / (self.kedges[1:] ** 3 - self.kedges[:-1] ** 3)
         )
-        """
-        return (
-            3
-            / 4
-            * (self.kedges[1:] ** 4 - self.kedges[:-1] ** 4)
-            / (self.kedges[1:] ** 3 - self.kedges[:-1] ** 3)
-        )
 
     @property
-    def kedges(self) -> np.ndarray:
-        """
     def kedges(self) -> np.ndarray:
         """
         Returns the edges of the k-bins.
@@ -884,9 +843,8 @@ class FourierBinned:
         numpy.ndarray
             The number of modes per k-bin shell.
         """
-        """
 
-        if hasattr(self, "_nmodes"):
+        if self._nmodes is not None:
             return self._nmodes
         assert self.volume is not None, (
             "Volume is not set. Cannot compute number of modes. Please set the volume or provide the number of modes directly."
@@ -902,10 +860,9 @@ class FourierBinned:
         nmodes : numpy.ndarray
             The number of modes per k-bin shell.
         """
-        """
 
         self._nmodes = nmodes
-
+        return nmodes
 
 
 class FourierCovariance(Covariance, FourierBinned):
@@ -932,10 +889,10 @@ class FourierCovariance(Covariance, FourierBinned):
     def kcut(self, kmin: Optional[float] = None, kmax: Optional[float] = None):
         """Cuts the covariance matrix to a specified kmin and kmax."""
         if kmin is None:
-            kmin = max(self.kbin1.kmin, self.kbin2.kmin)
+            kmin = self.kmin
 
         if kmax is None:
-            kmax = min(self.kbin1.kmax, self.kbin2.kmax)
+            kmax = self.kmax
 
         imin = (self.kmid >= kmin).argmax()
         imax = (
@@ -997,7 +954,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
 
         cov = self.cov
 
-        mask = ell1 <= ell2 if self.symmetric else np.ones_like(ell1, dtype=bool)
+        mask = ell1 <= ell2 if not ells_both_ways else np.ones_like(ell1, dtype=bool)
         utils.mkdir(os.path.dirname(filename))
         np.savetxt(
             filename,
@@ -1029,17 +986,17 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
         """
         ell1, ell2, k1, k2, value = np.loadtxt(filename).T
 
-        # k1 = np.unique(k1)
-        # kbins = len(k)
+        k = np.unique(k1)
+        kbins = len(k)
 
-        # assert np.allclose(k, np.unique(k2)), "k1 and k2 are not consistent"
+        assert np.allclose(k, np.unique(k2)), "k1 and k2 are not consistent"
 
         dk = np.mean(np.diff(k))
         kmin = k.min() - dk / 2
         kmax = k.max() + dk / 2
 
-        # ells = np.unique(ell1)
-        # assert np.allclose(ells, np.unique(ell2)), "ell1 and ell2 are not consistent"
+        ells = np.unique(ell1)
+        assert np.allclose(ells, np.unique(ell2)), "ell1 and ell2 are not consistent"
 
         ells_both_ways = len(value) == (len(ells) * kbins) ** 2
         ells_one_way = len(value) == (len(ells) ** 2 + len(ells)) / 2 * kbins**2
@@ -1050,7 +1007,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
 
         self.set_kbins(kmin, kmax, float(dk))
 
-        # assert np.allclose(np.unique(k1), self.kmid), "k bins are not linearly spaced"
+        assert np.allclose(np.unique(k1), self.kmid), "k bins are not linearly spaced"
 
         kmid_matrix = np.einsum("i,j->ij", k, np.ones_like(k))
 
@@ -1063,7 +1020,7 @@ class MultipoleFourierCovariance(MultipoleCovariance, FourierCovariance):
             c = value[block_mask].reshape(kbins, kbins)
             self.set_ell_cov(l1, l2, c)
 
-        # return self
+        return self
 
     @classmethod
     def fromcsv(cls: Any, filename: str) -> "MultipoleFourierCovariance":
