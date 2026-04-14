@@ -24,12 +24,8 @@ from typing import Optional, Callable, Any
 from mockfactory import Catalog
 
 import numpy as np
-import scipy as sp
 
 from tqdm import tqdm as shell_tqdm
-
-import mockfactory
-from pypower import CatalogMesh
 
 from . import base, utils, math
 
