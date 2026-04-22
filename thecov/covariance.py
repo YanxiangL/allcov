@@ -1021,7 +1021,7 @@ class SuperSampleCovariance(base.PowerSpectrumMultipolesCovariance):
         else:
             raise ValueError("ell_kernel must be 0, 2, or 4.")
 
-        Z12 = np.vectorize(Z12)
+        # Z12 = np.vectorize(Z12)
         legendre = math.legendre(ell_legendre)
 
         from scipy.integrate import quad
