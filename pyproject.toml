@@ -7,12 +7,14 @@ requires-python = ">=3.12"
 dependencies = [
     "cosmoprimo",
     "cython>=3.2.4",
+    "fitsio>=1.3.0",
     "healpy>=1.19.0",
     "mockfactory",
     "mpi4py>=4.1.1",
     "numexpr>=2.14.1",
     "numpy>=2.4.4",
     "powercovfft",
+    "pyclass",
     "pycorr",
     "pypower",
     "scipy>=1.17.1",
@@ -26,6 +28,7 @@ pypower = { git = "https://github.com/cosmodesi/pypower.git" }
 powercovfft = { git = "https://github.com/archaeo-pteryx/PowerSpecCovFFT.git" }
 cosmoprimo = { git = "https://github.com/cosmodesi/cosmoprimo.git" }
 pycorr = { git = "https://github.com/cosmodesi/pycorr.git" }
+pyclass = { git = "https://github.com/adematti/pyclass.git" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["thecov"]

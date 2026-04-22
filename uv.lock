@@ -83,6 +83,33 @@ wheels = [
 ]
 
 [[package]]
+name = "fitsio"
+version = "1.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9e/f1/319003b56bcf6c83ef299461d601e13ad5910c1d62fa683d86fdb2fec2c6/fitsio-1.3.0.tar.gz", hash = "sha256:e2394fb0dca62f46feaaf61a48ad89fad6d2428a5a96a78ebfb4299a084b9260", size = 4995996, upload-time = "2025-11-12T15:24:25.021Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dc/3f/6ecf0a9b597bd61de2705a10ae3ad1a8ec27da5f948cf38101376a3c5084/fitsio-1.3.0-cp312-cp312-macosx_13_0_x86_64.whl", hash = "sha256:e81b837a5e802784a487f00ef87783aee13204591c0f8283d020a48f348fa290", size = 687297, upload-time = "2025-11-12T15:23:59.312Z" },
+    { url = "https://files.pythonhosted.org/packages/33/35/e037ab8263507d922f5201afb69c10a32a3d45ea1571b2a08cdd6ce0fff7/fitsio-1.3.0-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:ac477c4b8f24d8e6fffe448f74e814b29e2ff24043797d497b0cacc8aef395db", size = 676817, upload-time = "2025-11-12T15:24:00.34Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/5c/5713b58b7a848ba0738ce70f461dbf937f94f22a194762ef679b66293884/fitsio-1.3.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:b0c6d0528947dd81bf0a50c8d0187edd05b2112bf890fc4dc825babb7f6e1d10", size = 804603, upload-time = "2025-11-12T15:24:01.685Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/9a/399a1e59664a5945ffe51b09230e9973104b8e1ba2bc6a894e1266a2ed16/fitsio-1.3.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:91556f6140e60a77cda96727fb7cb11316fc0f530ea6ddce4bee8b356737468c", size = 824075, upload-time = "2025-11-12T15:24:02.826Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/a4/9a07cff037542479a6d606b705b471bd878f477ebbec4a17a95e55899bbf/fitsio-1.3.0-cp313-cp313-macosx_13_0_x86_64.whl", hash = "sha256:4636c63228527028fe73b4ff5f7202be668dcd784c44bae4d4d2013a5e40902b", size = 687295, upload-time = "2025-11-12T15:24:04.37Z" },
+    { url = "https://files.pythonhosted.org/packages/53/55/f57eb7813534b5783db8ca25f25a2cdbc19d005c088a6b132af37f9268a1/fitsio-1.3.0-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:5c124fdc03318b66a5227a44428b7b161e07d4841b4a58b13b5db99383959322", size = 676817, upload-time = "2025-11-12T15:24:05.948Z" },
+    { url = "https://files.pythonhosted.org/packages/55/9b/a270a186b38280579a5cc4342ef619cb488521d28f3a1872d4d81840cd0c/fitsio-1.3.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:37568c7e8d3193e96ebbd5d9221bbb5e288e8e3e44d3780bc656680404dc5ee6", size = 804706, upload-time = "2025-11-12T15:24:07.22Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/42/683fd9ed3b5069ac41b0469fd1121d5c4c4aafb88b41d383206afe688223/fitsio-1.3.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:b1017eea6a3924ce47e3aae6f7451147ffb8251729a14c5fffc24b655924c862", size = 824191, upload-time = "2025-11-12T15:24:08.406Z" },
+    { url = "https://files.pythonhosted.org/packages/09/d3/dd701b5464c0a3ed19f8f0b28aae3999ca63683065a4ff3e9f5554e2159b/fitsio-1.3.0-cp314-cp314-macosx_13_0_x86_64.whl", hash = "sha256:f99292e606acb47122a2b985bfa9a528ac9d37326eb0ea0b597e26b92fbff22b", size = 687289, upload-time = "2025-11-12T15:24:09.439Z" },
+    { url = "https://files.pythonhosted.org/packages/06/f6/fc1780842bf27a61182c2fa1765bb07e8d48fd56a1f10d8119f0ca91ef30/fitsio-1.3.0-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:65956a157758fc719d148362a7fcfb4c48b539fe2a27046ea494c90c7fc7013f", size = 676845, upload-time = "2025-11-12T15:24:10.708Z" },
+    { url = "https://files.pythonhosted.org/packages/89/24/f17e2a70eb0ba962da95b1f92c5c05b4299d61934c55cf78b7419cb93b7f/fitsio-1.3.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:b49dbdd0c4727b119da8a40bbd2eb245277de3cce4935157b304396351a9a61c", size = 804731, upload-time = "2025-11-12T15:24:11.799Z" },
+    { url = "https://files.pythonhosted.org/packages/41/f2/5c0f93aa2c39e9f9ce8ea414519d47edf09e5894a0ad19b232f375c4b8d7/fitsio-1.3.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:d38863806b20231227acddfe1501644596199566007e8fae8c4526a3ae369dae", size = 824055, upload-time = "2025-11-12T15:24:12.868Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/c6/d6d89fad808297c68b608a57fd3c2d607c69b53514a1c967bdd669772865/fitsio-1.3.0-cp314-cp314t-macosx_13_0_x86_64.whl", hash = "sha256:d7d8ff2896d30a18a1d6ec836b727399040907937d368293a76ba6fe17f02d5b", size = 688438, upload-time = "2025-11-12T15:24:14.296Z" },
+    { url = "https://files.pythonhosted.org/packages/fa/a9/5f83fb47dcc89da6477bed2607ab0c32d824b185196bc6d53083ea47c0ed/fitsio-1.3.0-cp314-cp314t-macosx_14_0_arm64.whl", hash = "sha256:3261739383b890fe3eea6a2d3f97172e8d369020c9656d42c5fc843f0b977550", size = 678095, upload-time = "2025-11-12T15:24:15.885Z" },
+    { url = "https://files.pythonhosted.org/packages/89/41/c6a1eb665d58436768c1cc0a075f082b8c2957471ae351b1900c875e3805/fitsio-1.3.0-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:08569c6774598bbd8c07f6505e9aa047fc7860a5225152df24d0cfc2dbe6994f", size = 817955, upload-time = "2025-11-12T15:24:17.351Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/1a/3667f55e05a4ba214cc5349c626770d120f52d1b0bb1d90b590fcc8eb157/fitsio-1.3.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:dd2b1fce5227aa2f9cb478f67d61e037428bcd14eaf7a4be2a0a6662cdd32d5e", size = 837007, upload-time = "2025-11-12T15:24:18.436Z" },
+]
+
+[[package]]
 name = "healpy"
 version = "1.19.0"
 source = { registry = "https://pypi.org/simple" }
@@ -349,6 +376,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pyclass"
+version = "1.3.0"
+source = { git = "https://github.com/adematti/pyclass.git#4e2494d4e1b4bbf60ffba72afd933d999625ddea" }
+dependencies = [
+    { name = "cython" },
+    { name = "numpy" },
+]
+
+[[package]]
 name = "pycorr"
 version = "1.0.0"
 source = { git = "https://github.com/cosmodesi/pycorr.git#eaac8808c0866422b09bfa7351a39eb79607afd4" }
@@ -513,12 +549,14 @@ source = { editable = "." }
 dependencies = [
     { name = "cosmoprimo" },
     { name = "cython" },
+    { name = "fitsio" },
     { name = "healpy" },
     { name = "mockfactory" },
     { name = "mpi4py" },
     { name = "numexpr" },
     { name = "numpy" },
     { name = "powercovfft" },
+    { name = "pyclass" },
     { name = "pycorr" },
     { name = "pypower" },
     { name = "scipy" },
@@ -530,12 +568,14 @@ dependencies = [
 requires-dist = [
     { name = "cosmoprimo", git = "https://github.com/cosmodesi/cosmoprimo.git" },
     { name = "cython", specifier = ">=3.2.4" },
+    { name = "fitsio", specifier = ">=1.3.0" },
     { name = "healpy", specifier = ">=1.19.0" },
     { name = "mockfactory", git = "https://github.com/cosmodesi/mockfactory.git" },
     { name = "mpi4py", specifier = ">=4.1.1" },
     { name = "numexpr", specifier = ">=2.14.1" },
     { name = "numpy", specifier = ">=2.4.4" },
     { name = "powercovfft", git = "https://github.com/archaeo-pteryx/PowerSpecCovFFT.git" },
+    { name = "pyclass", git = "https://github.com/adematti/pyclass.git" },
     { name = "pycorr", git = "https://github.com/cosmodesi/pycorr.git" },
     { name = "pypower", git = "https://github.com/cosmodesi/pypower.git" },
     { name = "scipy", specifier = ">=1.17.1" },
