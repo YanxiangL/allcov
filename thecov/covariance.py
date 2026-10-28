@@ -179,8 +179,8 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             )
             return (
                 self._get_cosmic_variance_term(ik, jk)
-                + (1 + self.alpha) * self._get_mixed_term(ik, jk)
-                + (1 + self.alpha) ** 2 * self._get_shotnoise_term(ik, jk)
+                #+ (1 + self.alpha) * self._get_mixed_term(ik, jk)
+                #+ (1 + self.alpha) ** 2 * self._get_shotnoise_term(ik, jk)
             )
 
         self._set_survey_covariance(self._build_covariance_survey(func), self)
