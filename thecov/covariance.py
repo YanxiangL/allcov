@@ -177,10 +177,14 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             assert self.alpha is not None, (
                 "Alpha is not set. Cannot compute covariance."
             )
+            # Momentum field has no random-catalogue shot-noise (eq. 2.33), so the (1 + alpha) factors are 1.
+            alpha_factor = (
+                1.0 if getattr(self.geometry, "velocity", False) else 1 + self.alpha
+            )
             return (
                 self._get_cosmic_variance_term(ik, jk)
-                + (1 + self.alpha) * self._get_mixed_term(ik, jk)
-                + (1 + self.alpha) ** 2 * self._get_shotnoise_term(ik, jk)
+                + alpha_factor * self._get_mixed_term(ik, jk)
+                + alpha_factor**2 * self._get_shotnoise_term(ik, jk)
             )
 
         self._set_survey_covariance(self._build_covariance_survey(func), self)
@@ -413,6 +417,11 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
 
         # Use the passed function, or an identity function if None was provided
         _preproc = preproc if preproc is not None else lambda x: x
+
+        if getattr(self.geometry, "velocity", False):
+            raise NotImplementedError(
+                "Shotnoise rescaling with alpha is not defined for the momentum field (velocity=True)."
+            )
 
         @np.vectorize
         def dlikelihood(alpha):
