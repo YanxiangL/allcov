@@ -35,4 +35,4 @@ __pycache__/
 *.npy
 *.pdf
 *.tex
-
+*.out
