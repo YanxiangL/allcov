@@ -14,6 +14,7 @@ SurveyGeometry
 from __future__ import annotations
 
 import os
+import re
 import time
 import pickle
 from abc import ABC
@@ -386,6 +387,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         Number of k modes to be sampled in the calculation of the window kernels.
     alpha : float
         Factor to multiply the number density of the randoms. Default is 1.0.
+    velocity : bool
+        Whether the randoms describe the momentum (peculiar velocity) field. If True, the randoms
+        must have a 'VAR_U' column with the velocity variance <u^2(x)> in (km/s)^2, and W12
+        includes it to give the momentum shot-noise. Default is False.
     nthreads : int
         Number of threads to be used in the calculation of the window kernels.
     resume_file : str
@@ -422,6 +427,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         kmax_window: float = 0.02,
         kmodes_sampled: int = 5000,
         alpha: float = 1.0,
+        velocity: bool = False,
         nthreads: int | None = None,
         resume_file: str | None = None,
         tqdm: Callable = shell_tqdm,
@@ -432,6 +438,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self.logger = logging.getLogger("SurveyGeometry")
 
         self.alpha = alpha
+        self.velocity = velocity
         self.kmodes_sampled = kmodes_sampled
 
         # self._shotnoise = None
@@ -451,6 +458,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             # If no weight column is provided, set it to 1.0 for all objects.
             if name not in self._randoms:
                 self._randoms[name] = np.ones(self._randoms.size, dtype="f8")
+        if self.velocity and "VAR_U" not in self._randoms:
+            raise ValueError(
+                "velocity=True requires a 'VAR_U' column in randoms with the velocity variance <u^2(x)>."
+            )
         if "NZ" not in self._randoms:
             self.logger.warning(
                 "NZ column not found in randoms. Estimating it with RedshiftDensityInterpolator."
@@ -538,9 +549,23 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self._alpha = alpha
         self.clean()
 
+    @property
+    def velocity(self) -> bool:
+        # Geometries saved before the velocity option existed are galaxy geometries.
+        return getattr(self, "_velocity", False)
+
+    @velocity.setter
+    def velocity(self, velocity: bool):
+        self._velocity = velocity
+        self.clean()
+
     def W_cat(self, W):
         """Returns the window function Wij for the objects in the catalog.
            If it has not been computed yet, it is computed.
+
+        If the geometry is for the momentum field (velocity=True), W12 is
+        multiplied by the velocity variance <u^2(x)> (column 'VAR_U' of the randoms),
+        so that it gives the momentum shot-noise kernel (eq. 2.6).
 
         Parameters
         ----------
@@ -561,6 +586,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 * np.array(self._randoms["WEIGHT"])
                 * self.alpha
             )
+            # Momentum shot-noise: W12 -> W12 <u^2>. Other windows (e.g. W22) are unchanged.
+            if self.velocity and w[:2] == "12":
+                self._randoms[f"W{w}"] *= np.array(self._randoms["VAR_U"])
 
         return self._randoms[f"W{w}"]
 
@@ -1191,12 +1219,28 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             self.save(self._resume_file)
 
     def clean(self):
-        """Clean window kernels and power spectra."""
+        """Clean window kernels, power spectra, and the cached window functions and integrals."""
         self.WinKernel = None
         self.WinKernel_error = None
         self._window_power = None
         self._W = {}
         self._I = {}
+        # Previously, only the lines above were reset, which left two caches stale after changing
+        # alpha (or velocity):
+        #   1. self._I is not used anywhere. I() is decorated with utils.cache_method, which stores
+        #      its results in self._cache["I"], so I("12"), I("22"), ... kept returning the values
+        #      computed with the old settings.
+        #   2. W_cat() stores the window functions as columns of the randoms (W12, W22, W12xx, ...)
+        #      and reuses them if they already exist, so the FFTs recomputed through W() were built
+        #      from the old columns (e.g. W12 without VAR_U after switching to velocity=True).
+        # Both are cleared below so that every window and integral is recomputed.
+        self._cache = {}
+        # Only match window columns (W + two digits + optional xyz), never WEIGHT or WEIGHT_FKP.
+        # _randoms does not exist yet when clean() is called by the setters in __init__.
+        if hasattr(self, "_randoms"):
+            for name in self._randoms.columns():
+                if re.fullmatch(r"W\d\d[xyz]*", name):
+                    del self._randoms[name]
 
     @staticmethod
     def _compute_window_kernel_row(bin_kmodes):
@@ -1853,7 +1897,16 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             Name of the file to load the window kernels from.
         """
         self.logger.info(f"Loading window kernels from {filename}.")
+        # None when called from from_window_kernels_file, where the flag comes from the file.
+        velocity = getattr(self, "_velocity", None)
+        # Remove it so files saved without the flag are read as velocity=False.
+        self.__dict__.pop("_velocity", None)
         self.load(filename)
+        if velocity is not None and velocity != self.velocity:
+            raise ValueError(
+                f"Resume file {filename} was computed with velocity={self.velocity}, "
+                f"but this geometry has velocity={velocity}."
+            )
         # Cartesian FFTs need to be loaded through the setter
         for key in self._W:
             self.set_cartesian_fft(key, self._W[key])
@@ -1896,6 +1949,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
     @property
     def fkp_shotnoise(self) -> float:
+        if self.velocity:
+            # Momentum: no random-catalogue term (<u> = 0), and <u^2> is already in I12 (see W_cat).
+            return self.I("12") / self.I("22")
         return (1 + self.alpha) * self.I("12") / self.I("22")
 
     @property

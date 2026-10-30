@@ -1235,9 +1235,11 @@ class PowerSpectrumMultipolesCovariance(MultipoleFourierCovariance):
 
         if isinstance(self.geometry, geometry.SurveyGeometry):
             assert self.alpha is not None, "Alpha is not set. Cannot compute shotnoise."
+            # Momentum field has no random-catalogue shot-noise, so the (1 + alpha) factor is 1.
+            alpha_factor = 1.0 if self.geometry.velocity else 1 + self.alpha
             return (
                 self.pk_renorm
-                * (1 + self.alpha)
+                * alpha_factor
                 * self.geometry.I("12")
                 / self.geometry.I("22")
             )
