@@ -2,7 +2,7 @@
 #SBATCH --account=desi    
 #SBATCH --constraint=cpu                
 #SBATCH --qos=shared                  
-#SBATCH --time=48:00:00
+#SBATCH --time=6:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1                     
 #SBATCH --cpus-per-task=40 

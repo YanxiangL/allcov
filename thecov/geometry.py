@@ -1533,6 +1533,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                     + 4.0 * np.conj(W["12xxxy"]) * k1xh**3 * k1yh
                     + 4.0 * np.conj(W["12xxxz"]) * k1xh**3 * k1zh
                     + 4.0 * np.conj(W["12xyyy"]) * k1yh**3 * k1xh
+                    + 4.0 * np.conj(W["12yyyz"]) * k1yh**3 * k1zh
+                    + 4.0 * np.conj(W["12xzzz"]) * k1zh**3 * k1xh
+                    + 4.0 * np.conj(W["12yzzz"]) * k1zh**3 * k1yh
                     + 6.0 * np.conj(W["12xxyy"]) * k1xh**2 * k1yh**2
                     + 6.0 * np.conj(W["12xxzz"]) * k1xh**2 * k1zh**2
                     + 6.0 * np.conj(W["12yyzz"]) * k1yh**2 * k1zh**2
@@ -1901,7 +1904,14 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         velocity = getattr(self, "_velocity", None)
         # Remove it so files saved without the flag are read as velocity=False.
         self.__dict__.pop("_velocity", None)
-        self.load(filename)
+        try:
+            self.load(filename)
+        except Exception:
+            # The file could not be loaded (e.g. FileNotFoundError for a new resume file, which
+            # set_resume_file catches). Restore the flag, otherwise velocity silently falls back to False.
+            if velocity is not None:
+                self._velocity = velocity
+            raise
         if velocity is not None and velocity != self.velocity:
             raise ValueError(
                 f"Resume file {filename} was computed with velocity={self.velocity}, "
