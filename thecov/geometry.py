@@ -29,6 +29,7 @@ import numpy as np
 from tqdm import tqdm as shell_tqdm
 
 from . import base, utils, math
+from . import math_mc
 
 __all__ = ["BoxGeometry", "SurveyGeometry"]
 
@@ -1087,6 +1088,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         # kmodes, Nmodes = math.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
 
         # HYBRID SAMPLING
+        """
         kmodes, Nmodes = math.sample_kmodes(
             kmin=self.kmin,
             kmax=self.kmax,
@@ -1094,6 +1096,17 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             boxsize=self.boxsize,
             max_modes=self.kmodes_sampled,
             k_shell_approx=0.1,
+        )
+        """
+        # HYBRID SAMPLING with MC integration improvement
+        kmodes, Nmodes = math_mc.sample_kmodes(
+            kmin=self.kmin, 
+            kmax=self.kmax, 
+            dk=self.dk, 
+            boxsize=self.boxsize,
+            max_modes=self.kmodes_sampled, 
+            k_shell_approx=0.1,
+            rng=42              # optional: makes the kernels reproducible
         )
 
         assert len(kmodes) == self.kbins and len(Nmodes) == self.kbins, (
