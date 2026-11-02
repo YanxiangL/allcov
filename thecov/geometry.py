@@ -29,6 +29,7 @@ import numpy as np
 from tqdm import tqdm as shell_tqdm
 
 from . import base, utils, math
+from . import math_mc
 
 __all__ = ["BoxGeometry", "SurveyGeometry"]
 
@@ -1087,6 +1088,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         # kmodes, Nmodes = math.sample_from_cube(self.kmax/kfun, self.dk/kfun, self.kmodes_sampled)
 
         # HYBRID SAMPLING
+        """
         kmodes, Nmodes = math.sample_kmodes(
             kmin=self.kmin,
             kmax=self.kmax,
@@ -1094,6 +1096,17 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             boxsize=self.boxsize,
             max_modes=self.kmodes_sampled,
             k_shell_approx=0.1,
+        )
+        """
+        # HYBRID SAMPLING with MC integration improvement
+        kmodes, Nmodes = math_mc.sample_kmodes(
+            kmin=self.kmin, 
+            kmax=self.kmax, 
+            dk=self.dk, 
+            boxsize=self.boxsize,
+            max_modes=self.kmodes_sampled, 
+            k_shell_approx=0.1,
+            rng=42              # optional: makes the kernels reproducible
         )
 
         assert len(kmodes) == self.kbins and len(Nmodes) == self.kbins, (
@@ -1520,6 +1533,9 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                     + 4.0 * np.conj(W["12xxxy"]) * k1xh**3 * k1yh
                     + 4.0 * np.conj(W["12xxxz"]) * k1xh**3 * k1zh
                     + 4.0 * np.conj(W["12xyyy"]) * k1yh**3 * k1xh
+                    + 4.0 * np.conj(W["12yyyz"]) * k1yh**3 * k1zh
+                    + 4.0 * np.conj(W["12xzzz"]) * k1zh**3 * k1xh
+                    + 4.0 * np.conj(W["12yzzz"]) * k1zh**3 * k1yh
                     + 6.0 * np.conj(W["12xxyy"]) * k1xh**2 * k1yh**2
                     + 6.0 * np.conj(W["12xxzz"]) * k1xh**2 * k1zh**2
                     + 6.0 * np.conj(W["12yyzz"]) * k1yh**2 * k1zh**2
@@ -1888,7 +1904,14 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         velocity = getattr(self, "_velocity", None)
         # Remove it so files saved without the flag are read as velocity=False.
         self.__dict__.pop("_velocity", None)
-        self.load(filename)
+        try:
+            self.load(filename)
+        except Exception:
+            # The file could not be loaded (e.g. FileNotFoundError for a new resume file, which
+            # set_resume_file catches). Restore the flag, otherwise velocity silently falls back to False.
+            if velocity is not None:
+                self._velocity = velocity
+            raise
         if velocity is not None and velocity != self.velocity:
             raise ValueError(
                 f"Resume file {filename} was computed with velocity={self.velocity}, "
