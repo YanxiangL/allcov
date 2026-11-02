@@ -9,11 +9,23 @@ in the window kernels:
 - Modes are drawn without replacement, from a numpy Generator that can be seeded.
 - Sampling is stratified in radius and direction (systematic sampling along a path through the
   shell), which keeps every mode equally likely while reducing the Monte Carlo variance.
+
+Summary of the differences with respect to thecov.math (details in the comments marked
+"Compared to math.py" below):
+
+- New: _get_rng, _concatenate_ranges, lattice_points_in_shell and stratified_sample.
+- Rewritten: sample_from_shell, sample_from_cube and sample_kmodes.
+- Unchanged (identical copies): r2c_to_c2c_3d, nmodes, cov2cor, fgrowth, wedges_to_multipoles,
+  legendre and get_real_Ylm.
+
+SurveyGeometry.compute_window_kernels uses math_mc.sample_kmodes with rng=42. The old
+math.sample_kmodes call is kept there as a commented-out block.
 """
 
 import numpy as np
 
 
+# Compared to math.py: unchanged.
 def r2c_to_c2c_3d(fourier: np.ndarray) -> np.ndarray:
     """Completes a 3D Fourier array generated using PFFT's r2c method with the elements
     that are omitted due to the Hermitian symmetry of the Fourier transform.
@@ -42,6 +54,10 @@ def r2c_to_c2c_3d(fourier: np.ndarray) -> np.ndarray:
     return np.concatenate((fourier, fourier_c), axis=2)
 
 
+# Compared to math.py: new. math.py draws from the global np.random state (np.random.rand,
+# np.random.randint), which is never seeded, so two runs with identical inputs give different
+# window kernels. Every sampling function here takes an rng argument instead (seed, Generator or
+# None), and sample_kmodes passes one Generator to all bins.
 def _get_rng(rng: np.random.Generator | int | None = None) -> np.random.Generator:
     """Returns a numpy random Generator from a seed, an existing Generator or None."""
     if isinstance(rng, np.random.Generator):
@@ -49,6 +65,7 @@ def _get_rng(rng: np.random.Generator | int | None = None) -> np.random.Generato
     return np.random.default_rng(rng)
 
 
+# Compared to math.py: new helper, used only by lattice_points_in_shell.
 def _concatenate_ranges(starts: np.ndarray, counts: np.ndarray) -> np.ndarray:
     """Concatenates the integer ranges [starts[i], starts[i] + counts[i]) into a single array.
 
@@ -61,6 +78,16 @@ def _concatenate_ranges(starts: np.ndarray, counts: np.ndarray) -> np.ndarray:
     return np.repeat(starts, counts) + (np.arange(total) - offsets)
 
 
+# Compared to math.py: new. It replaces two different ways math.py finds the modes of a bin:
+#   - math.sample_from_cube builds the full (2*ceil(rmax)+1)^3 cube with np.mgrid and assigns bins
+#     with ((ir - rmin) / dr).astype(int). astype(int) truncates towards zero, so points with
+#     rmin - dr < ir < rmin get index 0 and leak into the first bin. With kmin = 0.01 and
+#     kfun = dk = 0.005 (rmin = 2, dr = 1), 20 of the 86 modes math.py puts in the first bin have
+#     k < kmin. This function only returns points with rmin <= r < rmax.
+#   - math.sample_from_shell never enumerates the lattice, so the shell bins have no exact list of
+#     modes to sample from (see sample_from_shell below).
+# The half-open interval [rmin, rmax) matches the floor(k / dk) binning of the k2 modes in
+# SurveyGeometry._compute_window_kernel_row, so k1 and k2 modes are binned the same way.
 def lattice_points_in_shell(
     rmin: float, rmax: float
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -131,6 +158,16 @@ def lattice_points_in_shell(
     return ix, iy, iz, ir
 
 
+# Compared to math.py: new. It replaces how math.py subsamples a bin with more than max_modes modes:
+#   - math.sample_from_cube uses np.random.randint(N, size=max_modes), i.e. with replacement, so
+#     the same mode can be used several times while others are skipped.
+#   - math.sample_kmodes calls math.sample_from_shell max_modes times independently, which also
+#     draws with replacement, and always returns exactly max_modes points, even for a shell with
+#     fewer lattice modes. For the shell [20, 21) in units of kfun (5270 modes), 5000 such draws
+#     contain only about 3230 distinct modes on average.
+# Here the modes are distinct (without replacement), every mode has the same inclusion probability
+# n/N, so the equal-weight average in the window kernels stays unbiased, and with stratified=True the
+# samples cover the radii and directions of the shell evenly, which lowers the Monte Carlo scatter.
 def stratified_sample(
     ix: np.ndarray,
     iy: np.ndarray,
@@ -246,9 +283,22 @@ def sample_from_shell(
     x,y,z,r : float
         Coordinates of the sampled point.
     """
+    # Compared to math.py: sample_kmodes no longer calls this function (the shell bins are sampled with
+    # lattice_points_in_shell + stratified_sample). It is kept, with the same signature plus rng, for
+    # code that calls it directly, but both branches were corrected:
     rng = _get_rng(rng)
 
     if discrete:
+        # Compared to math.py: math.py draws a continuous point with r uniform in [rmin, rmax] and
+        # rounds each coordinate to the nearest integer. That is not uniform over the lattice points:
+        #   - r uniform means a density per unit volume proportional to 1/r^2, so the inner edge of
+        #     the shell is over-weighted by (rmax/rmin)^2 relative to the outer edge (2.25 for [2, 3)).
+        #   - after rounding, a lattice point is picked with probability proportional to how much of
+        #     its unit cell lies inside the continuous shell, so points near the shell edges are
+        #     picked less often than points near the middle of the shell.
+        #   - the check `r < rmin or r > rmax` accepts r == rmax, so lattice points lying exactly on
+        #     a bin edge (30 points with r = 20) can be drawn for both neighbouring bins.
+        #   - rejected points restart the function recursively instead of looping.
         # Rejection sampling from the bounding cube: every lattice point of the shell is
         # accepted with the same probability, so the result is uniform over the shell's lattice points
         R = int(np.floor(rmax))
@@ -258,6 +308,8 @@ def sample_from_shell(
             if rmin <= r < rmax:
                 return x, y, z, r
 
+    # Compared to math.py: math.py uses r = rmin + (rmax - rmin) * rand(), uniform in r rather than in
+    # volume, for the continuous point as well. The angular part is the same as in math.py.
     # Uniform in volume: r^3 is uniform between rmin^3 and rmax^3. See https://mathworld.wolfram.com/SpherePointPicking.html
     r = (rmin**3 + (rmax**3 - rmin**3) * rng.random()) ** (1 / 3)
     theta = 2 * np.pi * rng.random()
@@ -307,6 +359,7 @@ def sample_from_cube(
     """
     rng = _get_rng(rng)
 
+    # Compared to math.py: the number of bins imax is computed in the same way.
     imax = (rmax - rmin) / dr
     imax = int(np.round(imax)) if np.allclose(np.round(imax), imax) else int(imax)
 
@@ -314,9 +367,16 @@ def sample_from_cube(
     Nmodes = []
 
     for i in range(imax):
+        # Compared to math.py: math.py builds one cube of all lattice points up to ceil(rmax) and
+        # selects each bin with a mask over the whole cube (memory and time scale with the cube
+        # volume times the number of bins), and the truncating astype(int) binning lets modes
+        # with r < rmin into the first bin. Here each bin is enumerated directly as [lo, hi).
         lo, hi = rmin + i * dr, rmin + (i + 1) * dr
         ix, iy, iz, ir = lattice_points_in_shell(lo, hi)
         N = len(ir)
+        # Compared to math.py: when N > max_modes, math.py picks np.random.randint(N, size=max_modes),
+        # with replacement; here the max_modes modes are distinct and stratified. Bins with
+        # N <= max_modes use all their modes, as in math.py. Nmodes is the exact lattice count in both.
         if N > max_modes:
             idx = stratified_sample(
                 ix, iy, iz, ir, lo, hi, int(max_modes), rng=rng, stratified=stratified
@@ -380,8 +440,12 @@ def sample_kmodes(
         "kmin, kmax, and dk must be specified."
     )
 
+    # Compared to math.py: new arguments rng, stratified and exact_nmodes (the defaults keep the
+    # Nmodes of math.py). One Generator is shared by all bins, so a seed makes the whole set of
+    # sampled modes, and therefore the window kernels, reproducible.
     rng = _get_rng(rng)
 
+    # Compared to math.py: k_shell and kfun are computed in the same way.
     # Wavelength where spherical shell approximation kicks in
     k_shell = max((k_shell_approx - kmin) // dk * dk + kmin, kmin)
 
@@ -398,6 +462,11 @@ def sample_kmodes(
         stratified=stratified,
     )
 
+    # Compared to math.py: math.py fills each bin above k_shell with max_modes independent calls to
+    # math.sample_from_shell (biased towards the inner edge and the middle of the shell, with
+    # replacement, and always max_modes points even if the shell has fewer modes). Here the exact
+    # lattice modes of the shell are enumerated and subsampled with stratified_sample, so these
+    # bins are sampled the same way as the bins below k_shell.
     # Bins from k_shell to kmax, sampled from the exact lattice modes of each shell
     kedges_shell = np.arange(k_shell, kmax + dk / 2, dk)
     shell_modes = []
@@ -412,6 +481,9 @@ def sample_kmodes(
         )
         shell_counts.append(len(ir))
 
+    # Compared to math.py: math.py always uses the continuous shell volume nmodes(...) above k_shell,
+    # which is the default here as well. exact_nmodes=True uses the lattice counts instead, so that
+    # Nmodes is consistent with the lattice modes actually summed over in the window kernels.
     if exact_nmodes:
         shell_nmodes = shell_counts
     else:
@@ -431,9 +503,13 @@ def sample_kmodes(
         f"({'stratified' if stratified else 'simple random'} sampling, without replacement)."
     )
 
+    # Compared to math.py: same output format, a list of (n, 4) arrays (x, y, z, r) in units of kfun
+    # and an array of Nmodes per bin, so SurveyGeometry.compute_window_kernels needs no other change.
     return cube_modes + shell_modes, np.array(cube_nmodes + shell_nmodes)
 
 
+# Compared to math.py: nmodes and all the functions below (cov2cor, fgrowth, wedges_to_multipoles,
+# legendre, get_real_Ylm) are unchanged copies.
 def nmodes(
     volume: float, kmin: float | np.ndarray, kmax: float | np.ndarray
 ) -> float | np.ndarray:
