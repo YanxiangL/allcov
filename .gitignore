@@ -1,5 +1,7 @@
 data/
 *.npz
+# Reference outputs of the regression tests
+!thecov/tests/reference/*.npz
 *egg-info
 build/
 
