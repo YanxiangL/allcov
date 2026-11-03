@@ -1,5 +1,7 @@
 data/
 *.npz
+# Reference outputs of the regression tests
+!thecov/tests/reference/*.npz
 *egg-info
 build/
 
@@ -36,3 +38,6 @@ __pycache__/
 *.pdf
 *.tex
 *.out
+
+# Model power spectrum code; kept separate from thecov
+PS_code/
