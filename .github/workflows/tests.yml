@@ -1,0 +1,42 @@
+# Runs the test suite (thecov/tests) with pytest on GitHub Actions.
+#
+# Together with a branch protection rule on main ("Require status checks to pass before
+# merging", with the "pytest" check selected), this blocks merging a pull request until all
+# tests pass, including the regression test of the Gaussian covariance.
+#
+# The tests themselves take about a minute. Installing the dependencies is the slow part, since
+# several of them are installed from git and compiled (pyclass, pypower, mockfactory,
+# powercovfft, mpi4py); later runs are faster thanks to the uv cache.
+
+name: tests
+
+# Run on every pull request, and on main after a merge
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # mpi4py is built from source and needs an MPI library
+      - name: Install MPI
+        run: sudo apt-get update && sudo apt-get install -y libopenmpi-dev
+
+      # uv installs Python and the exact package versions in uv.lock; the cache speeds up later runs
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      # --locked fails if uv.lock is out of date with pyproject.toml, instead of resolving
+      # different versions. The dev dependency group (pytest) is installed by default.
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Run tests
+        run: uv run pytest thecov/tests -v
