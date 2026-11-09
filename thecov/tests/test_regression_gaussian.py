@@ -5,8 +5,10 @@ What it checks
 That the window kernels, the Gaussian covariance and the shot-noise of the galaxy (C_gggg) and
 momentum (C_pppp) auto-power spectra stay the same when the code is changed. It does not check
 that the covariance is physically correct: the setup is a small toy survey, chosen so that the
-test is fast. The reference outputs were computed with the code before the refactor of the
-window kernel calculation into thecov/kernels.py.
+test is fast. The reference outputs were computed with the original (CovaPT) window kernel code,
+before thecov/kernels.py existed. Every output is checked with both kernel backends of
+SurveyGeometry: "covapt" (the original code) and "generic" (thecov.kernels), which must agree
+with the same reference. The reference file is always regenerated with "covapt".
 
 How it works
 ------------
@@ -121,13 +123,16 @@ def make_randoms(velocity: bool, seed: int = 0) -> dict:
     return randoms
 
 
-def compute_outputs(velocity: bool) -> dict:
+def compute_outputs(velocity: bool, kernel_backend: str = "covapt") -> dict:
     """Window kernels, Gaussian covariance and shot-noise for the toy setup.
 
     Parameters
     ----------
     velocity : bool
         If True, computes C_pppp (momentum field). If False, computes C_gggg (galaxies).
+    kernel_backend : str
+        Code that computes the window kernels: "covapt" (the original code, used to make the
+        reference file) or "generic" (thecov.kernels). Both must reproduce the reference.
 
     Returns
     -------
@@ -141,6 +146,7 @@ def compute_outputs(velocity: bool) -> dict:
         nmesh=NMESH,
         alpha=ALPHA,
         velocity=velocity,
+        kernel_backend=kernel_backend,
         kmodes_sampled=KMODES_SAMPLED,
         # The window kernels are a sum over the chunks of each worker, so the
         # number of threads changes the floating-point summation order.
@@ -172,20 +178,21 @@ def compute_outputs(velocity: bool) -> dict:
     }
 
 
-def compute_all_outputs() -> dict:
+def compute_all_outputs(kernel_backend: str = "covapt") -> dict:
     """Outputs of compute_outputs for both C_gggg and C_pppp, with keys "<block>_<output>"."""
     outputs = {}
     for name, velocity in [("gggg", False), ("pppp", True)]:
-        for key, value in compute_outputs(velocity).items():
+        for key, value in compute_outputs(velocity, kernel_backend).items():
             outputs[f"{name}_{key}"] = value
     return outputs
 
 
-# The outputs are computed once per test session (scope="module") and shared by all the
-# parametrized test cases below, since computing them is the slow part.
-@pytest.fixture(scope="module")
-def outputs():
-    return compute_all_outputs()
+# The outputs are computed once per backend (scope="module", one fixture instance per param) and
+# shared by all the parametrized test cases below, since computing them is the slow part.
+# The "generic" backend (thecov.kernels) must reproduce the same reference as the original code.
+@pytest.fixture(scope="module", params=["covapt", "generic"])
+def outputs(request):
+    return compute_all_outputs(request.param)
 
 
 @pytest.fixture(scope="module")
@@ -193,7 +200,7 @@ def reference():
     return np.load(REFERENCE_FILE)
 
 
-# One test case per block and output (6 in total), so that a failure says which one changed.
+# One test case per backend, block and output (12 in total), so that a failure says which one changed.
 @pytest.mark.parametrize("name", ["gggg", "pppp"])
 @pytest.mark.parametrize("key", ["WinKernel", "cov", "shotnoise"])
 def test_gaussian_regression(outputs, reference, name, key):
@@ -211,5 +218,5 @@ def test_gaussian_regression(outputs, reference, name, key):
 # Running this file as a script regenerates the reference file from the current code.
 if __name__ == "__main__":
     os.makedirs(os.path.dirname(REFERENCE_FILE), exist_ok=True)
-    np.savez(REFERENCE_FILE, **compute_all_outputs())
+    np.savez(REFERENCE_FILE, **compute_all_outputs("covapt"))
     print(f"Saved reference outputs to {REFERENCE_FILE}.")
