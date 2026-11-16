@@ -668,12 +668,13 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     @property
     def ikgrid(self) -> list[np.ndarray]:
         """Grid of wavenumber indices."""
-        ikgrid = []
-        for _ in range(3):
-            iik = np.arange(self.nmesh)
-            iik[iik >= self.nmesh // 2] -= self.nmesh
-            ikgrid.append(iik)
-        return ikgrid
+        # FFT ordering of the integer frequencies, as np.fft.fftfreq: 0, 1, ..., -2, -1, i.e.
+        # 0 ... nmesh/2 - 1, -nmesh/2 ... -1 for even nmesh and the symmetric
+        # 0 ... (nmesh-1)/2, -(nmesh-1)/2 ... -1 for odd nmesh. (A cutoff at nmesh // 2 gives the
+        # wrong wavevector to one plane per axis for odd nmesh.) Rounded to integers, since
+        # nmesh * (1 / nmesh) is not exactly 1 in floating point for every nmesh.
+        iik = np.rint(np.fft.fftfreq(self.nmesh, d=1.0 / self.nmesh)).astype(int)
+        return [iik.copy() for _ in range(3)]
 
     def get_mesh(self, label: str):
         """Returns a mesh object for the window function Wij.
@@ -1142,6 +1143,12 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         assert len(kmodes) == self.kbins and len(Nmodes) == self.kbins, (
             f"Error in thecov.utils.sample_kmodes: results should have length {self.kbins}, but had {len(kmodes)}. Parameters were kmin={self.kmin},kmax={self.kmax},dk={self.dk},boxsize={self.boxsize},max_modes={self.kmodes_sampled},k_shell_approx={0.1})."
         )
+        # An empty k bin would give 0 / 0 = NaN in the normalisation below (by kmodes_sampled and
+        # Nmodes); raise an error listing the empty bins instead. (The generic backend checks
+        # this in kernels.compute_kernel.)
+        from . import kernels
+
+        kernels.check_nonempty_bins(kmodes, Nmodes, self.kmin, self.dk, self.boxsize)
 
         # Calculate window FFTs if they haven't been initialized yet
         self.W("W12xx")
@@ -1150,6 +1157,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         init_params = {
             "boxsize": self.boxsize,
             "dk": self.dk,
+            "kmin": self.kmin,
             "nmesh": self.nmesh,
             "ikgrid": self.ikgrid,
             "delta_k_max": self.delta_k_max,
@@ -1201,7 +1209,11 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                     # self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
                     continue
 
-            init_params["k1_bin_index"] = i + self.kmin // self.dk
+            # Index of the k1 bin counted from kmin: bin i is [kmin + i dk, kmin + (i+1) dk), the
+            # same bins as sample_kmodes and Nmodes. (It used to be i + kmin // dk, counted from
+            # k = 0, which is wrong when kmin is not a multiple of dk, and off by one when the
+            # floating-point division rounds down, e.g. 0.03 // 0.01 = 2.0.)
+            init_params["k1_bin_index"] = i
             kmodes_sampled = len(km)
 
             # Splitting kmodes in chunks to be sent to each worker
@@ -1372,6 +1384,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         boxsize = shared_params["boxsize"]
         kfun = 2 * np.pi / boxsize
         dk = shared_params["dk"]
+        kmin = shared_params["kmin"]
 
         W = shared_w
 
@@ -1404,8 +1417,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
             k2r = np.sqrt(k2xh**2 + k2yh**2 + k2zh**2)
 
-            # to decide later which shell the k2 mode belongs to
-            k2_bin_index = (k2r * kfun / dk).astype(int)
+            # to decide later which shell the k2 mode belongs to: bin j is
+            # [kmin + j dk, kmin + (j+1) dk), as for k1. np.floor, not astype(int), so that modes
+            # below kmin get a negative index instead of being truncated into bin 0.
+            k2_bin_index = np.floor((k2r * kfun - kmin) / dk).astype(int)
 
             k2r[k2r <= 1e-10] = np.inf
 

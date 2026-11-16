@@ -23,6 +23,14 @@ The calculation is split in three stages, so that the expensive part can run as 
    over the k1 bins. Assembling the covariance (multiplying by the power spectra and the
    normalisations) is NOT done here.
 
+Different windows are never mixed: windows.json records the mesh, the mass assignment and,
+for each window, I, the number of objects and a SHA-256 of its positions and weights, with an
+"id" hashed from these. prepare refuses to write into a directory that already holds windows
+(the same ones, or different ones unless overwrite=True); every kernel file records the windows
+id, so merge rejects chunks from different windows; and compute skips a chunk whose file already
+exists with the same metadata (so a whole job array can be resubmitted), but refuses to
+overwrite one with different metadata.
+
 The kernels do not depend on cosmology, the power spectra or the normalisations I_22: those are
 all applied at assembly. So the same kernels can be reused for any input power spectrum.
 
@@ -116,13 +124,17 @@ calls compute_kernel with the moments of the geometry. The original CovaPT code
 from __future__ import annotations
 
 import argparse
+import datetime
 import glob
+import hashlib
 import itertools as itt
 import json
 import logging
 import math
 import multiprocessing as mp
 import os
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from functools import lru_cache
@@ -702,6 +714,63 @@ def common_box(*positions, boxpad: float = 2.0) -> tuple[float, np.ndarray]:
     return boxsize, (pmin + pmax) / 2.0
 
 
+# Mass assignment of the windows, as in SurveyGeometry (the mesh is also compensated, see
+# compute_window_moments). Recorded in windows.json together with any override.
+DEFAULT_MESH_KWARGS = {"interlacing": 3, "resampler": "tsc"}
+
+# Fields of windows.json that define the moments; the windows id is a hash of them. The other
+# fields (created, thecov_commit) are only for information.
+WINDOWS_ID_KEYS = ("nmesh", "boxsize", "boxcenter", "max_order", "mesh_kwargs", "windows")
+
+
+def _arrays_sha256(*arrays) -> str:
+    """SHA-256 of the values (as float64) and shapes of some arrays, e.g. positions and weights.
+
+    Converting to float64 first gives the same hash for the same catalogue in float32 or float64.
+    """
+    h = hashlib.sha256()
+    for a in arrays:
+        a = np.ascontiguousarray(a, dtype="f8")
+        h.update(str(a.shape).encode())
+        h.update(memoryview(a).cast("B"))  # the raw bytes, without making a copy
+    return h.hexdigest()
+
+
+def windows_id(meta: dict) -> str:
+    """Identifier of a set of windows: SHA-256 of the fields of windows.json that define the
+    moments (WINDOWS_ID_KEYS), written as JSON with sorted keys so that it does not depend on
+    the order of the fields."""
+    payload = {k: meta[k] for k in WINDOWS_ID_KEYS}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def dict_differences(a, b, prefix: str = "") -> list[str]:
+    """Dotted names of the fields that differ between two (nested) dicts, e.g. ["windows.gg.I"]."""
+    if not (isinstance(a, dict) and isinstance(b, dict)):
+        return [] if a == b else [prefix or "<value>"]
+    diffs = []
+    for k in sorted(set(a) | set(b), key=str):
+        name = f"{prefix}.{k}" if prefix else str(k)
+        if k not in a or k not in b:
+            diffs.append(name)
+        else:
+            diffs += dict_differences(a[k], b[k], name)
+    return diffs
+
+
+def _thecov_commit() -> str | None:
+    """Git commit of the thecov code, for information only (None if not in a git repository)."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            capture_output=True, text=True, timeout=10,
+        )
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+
 def compute_window_moments(
     positions,
     weights,
@@ -729,7 +798,7 @@ def compute_window_moments(
     # Unit vector of the line of sight to each point (observer at the origin), shape (N, 3)
     xhat = positions / np.sqrt(np.sum(positions**2, axis=-1))[:, None]
     # Same mass assignment as SurveyGeometry; mesh_kwargs can override it
-    kwargs = {"interlacing": 3, "resampler": "tsc", **(mesh_kwargs or {})}
+    kwargs = {**DEFAULT_MESH_KWARGS, **(mesh_kwargs or {})}
 
     moments = {}
     for degree in range(max_order + 1):
@@ -769,6 +838,7 @@ def prepare_windows(
     boxcenter,
     max_order: int = 4,
     mesh_kwargs: dict | None = None,
+    overwrite: bool = False,
 ) -> dict:
     """Prepare stage: compute and save the moments of all windows on one common mesh.
 
@@ -784,19 +854,81 @@ def prepare_windows(
     nmesh, boxsize, boxcenter : mesh shared by all windows (see common_box).
     max_order : int
         Highest degree of the moments. Must be >= the max_order used in compute_kernel.
+    mesh_kwargs : dict, optional
+        Overrides of the mass assignment (DEFAULT_MESH_KWARGS) passed to pypower's CatalogMesh.
+    overwrite : bool
+        If out_dir already holds windows (a windows.json), they are only replaced if overwrite is
+        True and they differ from the new ones. Otherwise an error is raised, before any painting:
+        "already prepared" if they are the same, or the list of the differing fields.
+
+    windows.json records everything that defines the moments: the mesh, the mass assignment,
+    and for each window the integral I, the number of objects and a SHA-256 of its positions
+    and weights. Its "id" is a hash of these fields (see windows_id). compute_kernel copies the
+    id into the metadata of every kernel, so that kernels computed from different windows are
+    never merged or assembled together.
 
     Returns
     -------
     dict with the metadata written to windows.json.
     """
-    os.makedirs(out_dir, exist_ok=True)
+    mesh_kwargs = {**DEFAULT_MESH_KWARGS, **(mesh_kwargs or {})}
+    windows = {name: (np.asarray(p), np.asarray(w, dtype="f8")) for name, (p, w) in windows.items()}
+
+    # Metadata of the new windows. Everything here is cheap (no painting), so the check against
+    # an existing directory below happens before any expensive work.
     meta = {
         "nmesh": int(nmesh),
         "boxsize": float(boxsize),
         "boxcenter": [float(c) for c in np.ravel(boxcenter)],
         "max_order": int(max_order),
-        "windows": {},
+        # compensate=True is fixed in compute_window_moments; recorded for completeness
+        "mesh_kwargs": {**mesh_kwargs, "compensate": True},
+        "windows": {
+            name: {
+                # Sum of the weights = Monte Carlo estimate of int W(x) d^3x, e.g. I22^ab for
+                # W22^ab, the same as SurveyGeometry.I("22"). Used for the normalisation at assembly.
+                "I": float(np.sum(weights)),
+                "n_objects": int(len(weights)),
+                # Identifies the catalogue: two catalogues can have the same I and size
+                "sha256": _arrays_sha256(positions, weights),
+            }
+            for name, (positions, weights) in windows.items()
+        },
     }
+    # Round trip through JSON, so that the metadata compares equal to what is read back from file
+    meta = json.loads(json.dumps(meta))
+    meta["id"] = windows_id(meta)
+
+    meta_path = os.path.join(out_dir, "windows.json")
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            old = json.load(f)
+        if old.get("id") == meta["id"]:
+            raise ValueError(
+                f"These windows are already prepared in {out_dir} (id {meta['id'][:12]}); "
+                "nothing to do."
+            )
+        # windows.json written by an older version has no id; compare its fields instead
+        old_fields = {k: old.get(k) for k in WINDOWS_ID_KEYS}
+        diffs = dict_differences(old_fields, {k: meta[k] for k in WINDOWS_ID_KEYS})
+        if not overwrite:
+            raise ValueError(
+                f"{out_dir} already holds different windows (differing fields: "
+                f"{', '.join(diffs)}). Use a new directory, or overwrite=True to replace them "
+                "(kernels computed from the old windows are then rejected at merge)."
+            )
+        logger.warning(f"Replacing the windows in {out_dir} (differing fields: {', '.join(diffs)}).")
+        # windows.json first: if this run is interrupted, the directory is marked incomplete
+        os.remove(meta_path)
+        for name in old.get("windows", {}):
+            shutil.rmtree(os.path.join(out_dir, name), ignore_errors=True)
+    elif any(os.path.isdir(os.path.join(out_dir, name)) for name in windows):
+        # Moment files without windows.json: an earlier run was interrupted
+        logger.warning(f"{out_dir} holds moments from an interrupted run; overwriting them.")
+        for name in windows:
+            shutil.rmtree(os.path.join(out_dir, name), ignore_errors=True)
+
+    os.makedirs(out_dir, exist_ok=True)
     for name, (positions, weights) in windows.items():
         t0 = time.time()
         moments = compute_window_moments(
@@ -807,16 +939,14 @@ def prepare_windows(
         os.makedirs(os.path.join(out_dir, name), exist_ok=True)
         for exps, fft in moments.items():
             np.save(os.path.join(out_dir, name, monomial_label(exps) + ".npy"), fft)
-        meta["windows"][name] = {
-            # Sum of the weights = Monte Carlo estimate of int W(x) d^3x, e.g. I22^ab for W22^ab,
-            # the same as SurveyGeometry.I("22"). Used for the normalisation at assembly.
-            "I": float(np.sum(weights)),
-            "n_objects": int(len(weights)),
-        }
         logger.info(
             f"Window {name}: {len(moments)} moments in {time.time() - t0:.1f} s."
         )
-    with open(os.path.join(out_dir, "windows.json"), "w") as f:
+    # For information only (not part of the id)
+    meta["created"] = datetime.datetime.now().isoformat(timespec="seconds")
+    meta["thecov_commit"] = _thecov_commit()
+    # Written last: a directory without windows.json is an incomplete run
+    with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
     return meta
 
@@ -1018,10 +1148,13 @@ _STATE: dict = {}
 
 def _ikgrid(nmesh: int) -> np.ndarray:
     """Integer wavevectors of the FFT grid, flattened, shape (3, nmesh^3); as SurveyGeometry.ikgrid."""
-    # FFT ordering: 0, 1, ..., nmesh/2 - 1, -nmesh/2, ..., -1 (in units of kfun), so that grid
-    # index i of the FFT arrays corresponds to the wavevector iik[i]
-    iik = np.arange(nmesh)
-    iik[iik >= nmesh // 2] -= nmesh
+    # FFT ordering of the integer frequencies (in units of kfun), as np.fft.fftfreq, so that
+    # grid index i of the FFT arrays corresponds to the wavevector iik[i]: 0, 1, ..., -2, -1,
+    # i.e. 0 ... nmesh/2 - 1, -nmesh/2 ... -1 for even nmesh and the symmetric
+    # 0 ... (nmesh-1)/2, -(nmesh-1)/2 ... -1 for odd nmesh. (A cutoff at nmesh // 2 gives the
+    # wrong wavevector to one plane per axis for odd nmesh.) Rounded to integers, since
+    # nmesh * (1 / nmesh) is not exactly 1 in floating point for every nmesh.
+    iik = np.rint(np.fft.fftfreq(nmesh, d=1.0 / nmesh)).astype(int)
     # indexing="ij" so that axis 0 is x, matching the FFT arrays; flattened in the same (C) order
     # as fft.reshape(-1)
     return np.array(
@@ -1050,7 +1183,8 @@ def _kernel_chunk(task):
     """Sum of the kernel over a chunk of k1 modes of one k1 bin (not yet normalised).
 
     Follows SurveyGeometry._compute_window_kernel_row: for each k1 mode, k2 = k1 - q runs over
-    the whole FFT grid, and each k2 is assigned to bin floor(|k2| / dk).
+    the whole FFT grid, and each k2 is assigned to bin floor((|k2| - kmin) / dk), i.e. the bins
+    [kmin + j dk, kmin + (j+1) dk) of sample_kmodes and Nmodes.
     """
     ibin, k1_bin_index, kmodes = task
     spec, params, moments = _STATE["spec"], _STATE["params"], _STATE["moments"]
@@ -1058,7 +1192,7 @@ def _kernel_chunk(task):
     kfun = (
         2 * np.pi / params["boxsize"]
     )  # Fundamental frequency of the FFT grid in units of 1/boxsize.
-    dk, dkmax = params["dk"], params["delta_k_max"]
+    dk, dkmax, kmin = params["dk"], params["delta_k_max"], params["kmin"]
     ndelta = (
         2 * dkmax + 1
     )  # number of k2 bins kept: k1 bin - dkmax, ..., k1 bin + dkmax
@@ -1074,9 +1208,13 @@ def _kernel_chunk(task):
         # covers a whole grid of k2 modes around k1. Shape (3, nmesh^3).
         k2 = np.array([ik1x, ik1y, ik1z])[:, None] - ikgrid
         k2r = np.sqrt(np.sum(k2**2, axis=0))
-        # k2 bin floor(|k2| / dk), relative to the k1 bin, shifted by dkmax so that it is an
-        # index 0..ndelta-1 for the k2 bins that are kept
-        rel = (k2r * kfun / dk).astype(int) - int(k1_bin_index) + dkmax
+        # k2 bin floor((|k2| - kmin) / dk), counted from kmin like the k1 bins, relative to the
+        # k1 bin and shifted by dkmax so that it is an index 0..ndelta-1 for the k2 bins that
+        # are kept. np.floor, not astype(int): astype truncates towards zero, which would put
+        # modes just below kmin into bin 0.
+        rel = (
+            np.floor((k2r * kfun - kmin) / dk).astype(int) - int(k1_bin_index) + dkmax
+        )
         # Flat indices of the grid points whose k2 is in a kept bin; all others are dropped here,
         # so every array below has one value per selected point
         sel = np.flatnonzero((rel >= 0) & (rel < ndelta))
@@ -1099,6 +1237,97 @@ def _kernel_chunk(task):
                 idx, weights=prod, minlength=ndelta
             )
     return ibin, acc
+
+
+def check_nonempty_bins(kmodes, Nmodes, kmin, dk, boxsize):
+    """Raise a ValueError listing the k bins that contain no Fourier mode of the box.
+
+    The window kernels of a bin are divided by its number of modes Nmodes and by its number of
+    sampled k1 modes, so an empty bin would give 0 / 0 = NaN (numpy only warns). This happens at
+    low k when dk is smaller than the fundamental frequency kfun = 2 pi / boxsize. Setting the
+    kernels of such a bin to 0 would not help: the power spectrum is not defined there either.
+
+    Parameters
+    ----------
+    kmodes, Nmodes : list of np.ndarray, np.ndarray
+        Sampled k1 modes and number of modes of each bin, as returned by math_mc.sample_kmodes.
+    kmin, dk : float
+        Lower edge of the first bin and width of the bins, used to report the bin edges.
+    boxsize : float
+        Size of the box of the window FFTs, used to report kfun.
+    """
+    empty = [j for j in range(len(Nmodes)) if Nmodes[j] == 0 or len(kmodes[j]) == 0]
+    if empty:
+        edges = ", ".join(
+            f"[{kmin + j * dk:.5g}, {kmin + (j + 1) * dk:.5g})" for j in empty
+        )
+        raise ValueError(
+            f"{len(empty)} k bin(s) contain no Fourier modes of the window box "
+            f"(kfun = 2 pi / boxsize = {2 * np.pi / boxsize:.5g}): {edges}. "
+            "Use a larger dk or kmin, or a larger box (boxsize or boxpad)."
+        )
+
+
+def read_windows_meta(windows_dir: str) -> dict:
+    """Reads <windows_dir>/windows.json, written last by prepare_windows."""
+    path = os.path.join(windows_dir, "windows.json")
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"No windows.json in {windows_dir}: prepare_windows has not been run there, or was "
+            "interrupted."
+        )
+    with open(path) as f:
+        wmeta = json.load(f)
+    if "id" not in wmeta:
+        logger.warning(
+            f"{path} was written by an older version and has no id: kernels computed from it "
+            "cannot be told apart from kernels of other windows. Consider preparing it again."
+        )
+    return wmeta
+
+
+def _kernel_params(boxsize, nmesh, kmin, dk, delta_k_max, max_order) -> dict:
+    """Settings sent to the workers (and saved in the kernel metadata)."""
+    return {
+        "boxsize": float(boxsize),
+        "nmesh": int(nmesh),
+        "dk": float(dk),
+        "kmin": float(kmin),
+        "delta_k_max": int(delta_k_max),
+        "max_order": int(max_order),
+    }
+
+
+def kernel_meta(
+    spec, kmin, kmax, dk, kbins, k1_bins, kmodes_sampled, seed, k_shell_approx, params,
+    wmeta=None,
+) -> dict:
+    """Metadata saved with a kernel. Two kernel files can be merged or assembled together only if
+    their metadata agree (apart from k1_bins), so it includes the id of the windows used.
+
+    wmeta is the content of windows.json (None for moments in memory, e.g. from SurveyGeometry,
+    which are never saved or merged).
+    """
+    meta = {
+        "spec": spec.to_dict(),
+        "kmin": kmin,
+        "kmax": kmax,
+        "dk": dk,
+        "kbins": kbins,
+        "k1_bins": [int(k1_bins[0]), int(k1_bins[1])],
+        "kmodes_sampled": kmodes_sampled,
+        "seed": seed,
+        "k_shell_approx": k_shell_approx,
+        "phase": "-(k1-k2)",
+        **params,
+        "windows_id": None if wmeta is None else wmeta.get("id"),
+        # I, n_objects and sha256 of the windows used by this kernel type
+        "windows": None
+        if wmeta is None
+        else {w: wmeta["windows"][w] for w in spec.windows},
+    }
+    # Same types as after saving and loading (JSON), so that metadata can be compared directly
+    return json.loads(json.dumps(meta))
 
 
 def compute_kernel(
@@ -1164,10 +1393,10 @@ def compute_kernel(
         spec = get_kernel(spec)
     if (windows_dir is None) == (moments is None):
         raise ValueError("Give exactly one of windows_dir and moments.")
+    wmeta = None
     if windows_dir is not None:
         # The mesh is fixed by the prepare stage; read it rather than trusting the caller
-        with open(os.path.join(windows_dir, "windows.json")) as f:
-            wmeta = json.load(f)
+        wmeta = read_windows_meta(windows_dir)
         boxsize, nmesh = wmeta["boxsize"], wmeta["nmesh"]
         if max_order > wmeta["max_order"]:
             raise ValueError(
@@ -1192,25 +1421,21 @@ def compute_kernel(
         )
     else:
         kmodes, Nmodes = sampled
+    # Every bin is checked, not only k1_bins: the covariance needs all of them, and with job
+    # arrays every task then fails at once with the same message instead of producing NaNs.
+    check_nonempty_bins(kmodes, Nmodes, kmin, dk, boxsize)
     kbins = len(kmodes)
     start, stop = (0, kbins) if k1_bins is None else k1_bins
     if not 0 <= start < stop <= kbins:
         raise ValueError(f"k1_bins = {k1_bins} outside the {kbins} bins.")
 
-    params = {
-        "boxsize": float(boxsize),
-        "nmesh": int(nmesh),
-        "dk": float(dk),
-        "delta_k_max": int(delta_k_max),
-        "max_order": int(max_order),
-    }
+    params = _kernel_params(boxsize, nmesh, kmin, dk, delta_k_max, max_order)
 
     # Tasks: each bin is split in nthreads chunks of k1 modes, as in SurveyGeometry
     tasks = []
     for i in range(start, stop):
-        # Index of the bin counted from k = 0, which is what floor(|k2| / dk) gives for k2
-        # (as in SurveyGeometry; kmin // dk is the number of bins below kmin)
-        k1_bin_index = i + kmin // dk
+        # Index of the k1 bin counted from kmin, as for the k2 bins in _kernel_chunk
+        k1_bin_index = i
         for chunk in np.array_split(kmodes[i], max(1, nthreads)):
             if len(
                 chunk
@@ -1280,19 +1505,10 @@ def compute_kernel(
 
     logger.info(f"{spec.name}, k1 bins {start}-{stop}: {time.time() - t0:.1f} s.")
 
-    meta = {
-        "spec": spec.to_dict(),
-        "kmin": kmin,
-        "kmax": kmax,
-        "dk": dk,
-        "kbins": kbins,
-        "k1_bins": [start, stop],
-        "kmodes_sampled": kmodes_sampled,
-        "seed": seed,
-        "k_shell_approx": k_shell_approx,
-        "phase": "-(k1-k2)",
-        **params,
-    }
+    meta = kernel_meta(
+        spec, kmin, kmax, dk, kbins, (start, stop), kmodes_sampled, seed, k_shell_approx,
+        params, wmeta,
+    )
     return {
         "kernel": kernel,
         "Nmodes": np.asarray(Nmodes),
@@ -1351,7 +1567,10 @@ def merge_kernel_files(out_dir: str, name: str, remove_parts: bool = False) -> s
     for part, path in zip(parts, paths):
         meta = {k: v for k, v in part["meta"].items() if k != "k1_bins"}
         if meta != ref:
-            raise ValueError(f"{path} was computed with different settings.")
+            raise ValueError(
+                f"{path} was computed with different settings or windows than "
+                f"{paths[0]} (differing fields: {', '.join(dict_differences(ref, meta))})."
+            )
         start, stop = part["meta"]["k1_bins"]
         # Consecutive chunks must join up: [0, a), [a, b), ... with no gap or overlap
         if start != expected:
@@ -1562,35 +1781,61 @@ def main(argv=None):
 
     # Number of k bins, to split them into chunks. sample_kmodes is only called to count the bins
     # (Nmodes), so one mode per bin and any seed will do.
-    with open(os.path.join(args.windows_dir, "windows.json")) as f:
-        boxsize = json.load(f)["boxsize"]
+    wmeta = read_windows_meta(args.windows_dir)
+    boxsize, nmesh = wmeta["boxsize"], wmeta["nmesh"]
+    k_shell_approx = 0.1  # default of compute_kernel
     _, Nmodes = math_mc.sample_kmodes(
         kmin=args.kmin,
         kmax=args.kmax,
         dk=args.dk,
         boxsize=boxsize,
         max_modes=1,
-        k_shell_approx=0.1,
+        k_shell_approx=k_shell_approx,
         rng=0,
     )
     # Contiguous chunks of bin indices, as equal in size as possible
     chunks = np.array_split(np.arange(len(Nmodes)), args.n_k1_chunks)
 
+    delta_k_max = nmesh // 2 - 1 if args.delta_k_max is None else args.delta_k_max
     for name, c in selected:
         if len(chunks[c]) == 0:  # more chunks than bins
             continue
+        k1_bins = (int(chunks[c][0]), int(chunks[c][-1]) + 1)
+
+        # An existing output file: skip it if it was computed with the same settings and windows
+        # (e.g. when a whole job array is resubmitted after some tasks failed), and refuse to
+        # overwrite it otherwise. Checked before computing, from the metadata alone.
+        path = os.path.join(args.out_dir, kernel_filename(name, *k1_bins))
+        if os.path.exists(path):
+            expected = kernel_meta(
+                get_kernel(name), args.kmin, args.kmax, args.dk, len(Nmodes), k1_bins,
+                args.kmodes_sampled, args.seed, k_shell_approx,
+                _kernel_params(boxsize, nmesh, args.kmin, args.dk, delta_k_max, args.max_order),
+                wmeta,
+            )
+            existing = load_kernel(path)["meta"]
+            if existing == expected:
+                print(f"{path} already computed with the same settings and windows; skipping.")
+                continue
+            raise ValueError(
+                f"{path} exists and was computed with different settings or windows (differing "
+                f"fields: {', '.join(dict_differences(existing, expected))}). Use a new "
+                "--out-dir, or remove the file."
+            )
+
         result = compute_kernel(
             name,
             args.kmin,
             args.kmax,
             args.dk,
             windows_dir=args.windows_dir,
-            k1_bins=(int(chunks[c][0]), int(chunks[c][-1]) + 1),
+            k1_bins=k1_bins,
             kmodes_sampled=args.kmodes_sampled,
             max_order=args.max_order,
             delta_k_max=args.delta_k_max,
             nthreads=args.nthreads,
             seed=args.seed,
+            k_shell_approx=k_shell_approx,
         )
         print(save_kernel(result, args.out_dir))
 
