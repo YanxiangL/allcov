@@ -391,6 +391,13 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         Whether the randoms describe the momentum (peculiar velocity) field. If True, the randoms
         must have a 'VAR_U' column with the velocity variance <u^2(x)> in (km/s)^2, and W12
         includes it to give the momentum shot-noise. Default is False.
+    kernel_backend : str
+        Code used to compute the window kernels. "covapt" (default): the original CovaPT code
+        (_compute_window_kernel_row). "generic": thecov.kernels, the code that also computes the
+        kernels of the galaxy-momentum cross covariances; for C_gggg and C_pppp it gives the same
+        WinKernel up to round-off (~1e-15). Either way, this class only computes C_gggg
+        (velocity=False) or C_pppp (velocity=True): the cross covariances need two random
+        catalogues and are computed with the thecov.kernels command line.
     nthreads : int
         Number of threads to be used in the calculation of the window kernels.
     resume_file : str
@@ -428,6 +435,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         kmodes_sampled: int = 5000,
         alpha: float = 1.0,
         velocity: bool = False,
+        kernel_backend: str = "covapt",
         nthreads: int | None = None,
         resume_file: str | None = None,
         tqdm: Callable = shell_tqdm,
@@ -439,6 +447,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
         self.alpha = alpha
         self.velocity = velocity
+        self.kernel_backend = kernel_backend
         self.kmodes_sampled = kmodes_sampled
 
         # self._shotnoise = None
@@ -559,6 +568,23 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         self._velocity = velocity
         self.clean()
 
+    # Codes that can compute the window kernels (see compute_window_kernels)
+    KERNEL_BACKENDS = ("covapt", "generic")
+
+    @property
+    def kernel_backend(self) -> str:
+        # Geometries saved before the option existed used the CovaPT code.
+        return getattr(self, "_kernel_backend", "covapt")
+
+    @kernel_backend.setter
+    def kernel_backend(self, kernel_backend: str):
+        if kernel_backend not in self.KERNEL_BACKENDS:
+            raise ValueError(
+                f"kernel_backend must be one of {self.KERNEL_BACKENDS}, not {kernel_backend!r}."
+            )
+        # No clean(): both backends give the same kernels, so the ones already computed stay valid.
+        self._kernel_backend = kernel_backend
+
     def W_cat(self, W):
         """Returns the window function Wij for the objects in the catalog.
            If it has not been computed yet, it is computed.
@@ -642,12 +668,13 @@ class SurveyGeometry(Geometry, base.FourierBinned):
     @property
     def ikgrid(self) -> list[np.ndarray]:
         """Grid of wavenumber indices."""
-        ikgrid = []
-        for _ in range(3):
-            iik = np.arange(self.nmesh)
-            iik[iik >= self.nmesh // 2] -= self.nmesh
-            ikgrid.append(iik)
-        return ikgrid
+        # FFT ordering of the integer frequencies, as np.fft.fftfreq: 0, 1, ..., -2, -1, i.e.
+        # 0 ... nmesh/2 - 1, -nmesh/2 ... -1 for even nmesh and the symmetric
+        # 0 ... (nmesh-1)/2, -(nmesh-1)/2 ... -1 for odd nmesh. (A cutoff at nmesh // 2 gives the
+        # wrong wavevector to one plane per axis for odd nmesh.) Rounded to integers, since
+        # nmesh * (1 / nmesh) is not exactly 1 in floating point for every nmesh.
+        iik = np.rint(np.fft.fftfreq(self.nmesh, d=1.0 / self.nmesh)).astype(int)
+        return [iik.copy() for _ in range(3)]
 
     def get_mesh(self, label: str):
         """Returns a mesh object for the window function Wij.
@@ -1075,6 +1102,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         ----------
         .. [1] https://arxiv.org/abs/1910.02914
         """
+        # kernel_backend="generic": same kernels from thecov.kernels (see _compute_window_kernels_generic).
+        # Everything below is the original CovaPT code, unchanged.
+        if self.kernel_backend == "generic":
+            return self._compute_window_kernels_generic()
 
         # sample kmodes from each k1 bin
 
@@ -1100,18 +1131,24 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         """
         # HYBRID SAMPLING with MC integration improvement
         kmodes, Nmodes = math_mc.sample_kmodes(
-            kmin=self.kmin, 
-            kmax=self.kmax, 
-            dk=self.dk, 
+            kmin=self.kmin,
+            kmax=self.kmax,
+            dk=self.dk,
             boxsize=self.boxsize,
-            max_modes=self.kmodes_sampled, 
+            max_modes=self.kmodes_sampled,
             k_shell_approx=0.1,
-            rng=42              # optional: makes the kernels reproducible
+            rng=42,  # optional: makes the kernels reproducible
         )
 
         assert len(kmodes) == self.kbins and len(Nmodes) == self.kbins, (
             f"Error in thecov.utils.sample_kmodes: results should have length {self.kbins}, but had {len(kmodes)}. Parameters were kmin={self.kmin},kmax={self.kmax},dk={self.dk},boxsize={self.boxsize},max_modes={self.kmodes_sampled},k_shell_approx={0.1})."
         )
+        # An empty k bin would give 0 / 0 = NaN in the normalisation below (by kmodes_sampled and
+        # Nmodes); raise an error listing the empty bins instead. (The generic backend checks
+        # this in kernels.compute_kernel.)
+        from . import kernels
+
+        kernels.check_nonempty_bins(kmodes, Nmodes, self.kmin, self.dk, self.boxsize)
 
         # Calculate window FFTs if they haven't been initialized yet
         self.W("W12xx")
@@ -1120,6 +1157,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         init_params = {
             "boxsize": self.boxsize,
             "dk": self.dk,
+            "kmin": self.kmin,
             "nmesh": self.nmesh,
             "ikgrid": self.ikgrid,
             "delta_k_max": self.delta_k_max,
@@ -1171,7 +1209,11 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                     # self.logger.debug(f'Skipping bin {i} of {self.kbins}.')
                     continue
 
-            init_params["k1_bin_index"] = i + self.kmin // self.dk
+            # Index of the k1 bin counted from kmin: bin i is [kmin + i dk, kmin + (i+1) dk), the
+            # same bins as sample_kmodes and Nmodes. (It used to be i + kmin // dk, counted from
+            # k = 0, which is wrong when kmin is not a multiple of dk, and off by one when the
+            # floating-point division rounds down, e.g. 0.03 // 0.01 = 2.0.)
+            init_params["k1_bin_index"] = i
             kmodes_sampled = len(km)
 
             # Splitting kmodes in chunks to be sent to each worker
@@ -1208,6 +1250,88 @@ class SurveyGeometry(Geometry, base.FourierBinned):
             self.WinKernel[i, ..., 3] *= ell_factor(2, 0)
             self.WinKernel[i, ..., 4] *= ell_factor(4, 0)
             self.WinKernel[i, ..., 5] *= ell_factor(4, 2)
+
+            if self._resume_file is not None and (time.time() - last_save) > 600:
+                self.save(self._resume_file)
+                last_save = time.time()
+
+        self.logger.info("Window kernels computed.")
+
+        if self._resume_file is not None:
+            self.save(self._resume_file)
+
+    def _compute_window_kernels_generic(self):
+        """Window kernels from thecov.kernels, in the same WinKernel layout as the CovaPT code.
+
+        Used when kernel_backend="generic". It computes the three kernel types of an auto
+        covariance (Gaussian, P x shot-noise and pure shot-noise) with thecov.kernels.compute_kernel
+        and converts them to the [kbins, 2 * delta_k_max + 1, 15, 6] layout of WinKernel with
+        thecov.kernels.to_covapt_winkernel, so covariance.py uses them exactly as before. The k1
+        modes are sampled as in compute_window_kernels (math_mc.sample_kmodes with rng=42), so the
+        two backends agree to round-off. WinKernel_error (the spread between workers, only
+        estimated by the CovaPT code) is set to None.
+        """
+        from . import kernels
+
+        # Moments of the W22 and W12 windows of this geometry. With velocity=True, W12 already
+        # includes <u^2> (W_cat), so the kernel types named "gg" / "g12" in thecov.kernels serve
+        # both C_gggg and C_pppp: the names only label the windows.
+        moments = {
+            "gg": kernels.moments_from_geometry(self, "22"),
+            "g12": kernels.moments_from_geometry(self, "12"),
+        }
+        names = ("G_gg_gg", "M_gg_g12", "N_g12_g12")
+
+        # Sample the k1 modes once, instead of in every compute_kernel call below
+        sampled = math_mc.sample_kmodes(
+            kmin=self.kmin,
+            kmax=self.kmax,
+            dk=self.dk,
+            boxsize=self.boxsize,
+            max_modes=self.kmodes_sampled,
+            k_shell_approx=0.1,
+            rng=42,
+        )
+        assert len(sampled[0]) == self.kbins, (
+            f"math_mc.sample_kmodes returned {len(sampled[0])} bins instead of {self.kbins}."
+        )
+
+        if self.WinKernel is None:
+            self.WinKernel = np.full(
+                [self.kbins, 2 * self.delta_k_max + 1, 15, 6], np.nan
+            )
+        self.WinKernel_error = None
+
+        last_save = time.time()
+        # One k1 bin at a time, so that the resume file works as with the CovaPT code: rows already
+        # computed (e.g. loaded from the resume file) are skipped, and the file is saved every 10 min.
+        for i in self.tqdm(range(self.kbins), desc="Computing window kernels"):
+            if not np.isnan(self.WinKernel[i, 0, 0, 0]):
+                continue
+
+            if self.kmin is None or self.kmax is None or self.dk is None:
+                raise ValueError(
+                    "kmin, kmax, and dk must be set before computing the window kernels."
+                )
+            out = [
+                kernels.compute_kernel(
+                    name,
+                    self.kmin,
+                    self.kmax,
+                    self.dk,
+                    moments=moments,
+                    boxsize=self.boxsize,
+                    nmesh=self.nmesh,
+                    k1_bins=(i, i + 1),
+                    kmodes_sampled=self.kmodes_sampled,
+                    delta_k_max=self.delta_k_max,
+                    nthreads=self.nthreads or 1,
+                    sampled=sampled,
+                )["kernel"]
+                for name in names
+            ]
+            # to_covapt_winkernel returns shape (1, ...) for this single k1 bin
+            self.WinKernel[i] = kernels.to_covapt_winkernel(*out)[0]
 
             if self._resume_file is not None and (time.time() - last_save) > 600:
                 self.save(self._resume_file)
@@ -1260,6 +1384,7 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         boxsize = shared_params["boxsize"]
         kfun = 2 * np.pi / boxsize
         dk = shared_params["dk"]
+        kmin = shared_params["kmin"]
 
         W = shared_w
 
@@ -1292,8 +1417,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
 
             k2r = np.sqrt(k2xh**2 + k2yh**2 + k2zh**2)
 
-            # to decide later which shell the k2 mode belongs to
-            k2_bin_index = (k2r * kfun / dk).astype(int)
+            # to decide later which shell the k2 mode belongs to: bin j is
+            # [kmin + j dk, kmin + (j+1) dk), as for k1. np.floor, not astype(int), so that modes
+            # below kmin get a negative index instead of being truncated into bin 0.
+            k2_bin_index = np.floor((k2r * kfun - kmin) / dk).astype(int)
 
             k2r[k2r <= 1e-10] = np.inf
 
@@ -1903,7 +2030,10 @@ class SurveyGeometry(Geometry, base.FourierBinned):
         # None when called from from_window_kernels_file, where the flag comes from the file.
         velocity = getattr(self, "_velocity", None)
         # Remove it so files saved without the flag are read as velocity=False.
-        self.__dict__.pop("_velocity", None)
+        self.__dict__.pop("_velocity", None)  # type: ignore
+        # The kernel backend is a choice of this run, not a property of the saved kernels (both
+        # backends give the same kernels), so keep the one set by the user instead of the file's.
+        kernel_backend = getattr(self, "_kernel_backend", None)
         try:
             self.load(filename)
         except Exception:
@@ -1917,6 +2047,8 @@ class SurveyGeometry(Geometry, base.FourierBinned):
                 f"Resume file {filename} was computed with velocity={self.velocity}, "
                 f"but this geometry has velocity={velocity}."
             )
+        if kernel_backend is not None:
+            self._kernel_backend = kernel_backend
         # Cartesian FFTs need to be loaded through the setter
         for key in self._W:
             self.set_cartesian_fft(key, self._W[key])
