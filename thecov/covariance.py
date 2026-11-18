@@ -261,9 +261,18 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         covariance.set_ell_cov(0, 0, cov_array[:, :, 0])
         covariance.set_ell_cov(2, 2, cov_array[:, :, 1])
         covariance.set_ell_cov(4, 4, cov_array[:, :, 2])
-        covariance.set_ell_cov(0, 2, cov_array[:, :, 3])
-        covariance.set_ell_cov(0, 4, cov_array[:, :, 4])
-        covariance.set_ell_cov(2, 4, cov_array[:, :, 5])
+        # Original (upstream) code, kept for reference. It stored C^{l1 l2}(k1, k2) with l1 > l2
+        # as the (l2, l1) block without transposing it, i.e. transposed in k:
+        # covariance.set_ell_cov(0, 2, cov_array[:, :, 3])
+        # covariance.set_ell_cov(0, 4, cov_array[:, :, 4])
+        # covariance.set_ell_cov(2, 4, cov_array[:, :, 5])
+        # cov_array[..., 3:6] are C^{l1 l2}(k1, k2) for (l1, l2) = (2,0), (4,0), (4,2), with l1 the
+        # multipole at k1 (the row index), see SurveyGeometry._compute_window_kernel_row
+        # ([L0xL0, L2xL2, L4xL4, L2xL0, L4xL0, L4xL2]). Passing them as (l1, l2) lets set_ell_cov
+        # transpose them into the (l2, l1) blocks.
+        covariance.set_ell_cov(2, 0, cov_array[:, :, 3])
+        covariance.set_ell_cov(4, 0, cov_array[:, :, 4])
+        covariance.set_ell_cov(4, 2, cov_array[:, :, 5])
 
         return covariance
 
