@@ -14,14 +14,13 @@ from pypower import PowerSpectrumMultipoles
 cosmo = cosmoprimo.fiducial.DESI()
 
 # Load random catalog
-randoms = Catalog.read("/pscratch/sd/l/lgong/pv_cov/updated_desiy1_random_catalog_abacus_mock.fits")
-#randoms = Catalog.read('/pscratch/sd/l/lgong/pv_cov/LRG_NGC_0_clustering_cut_z0.4-0.6.ran.fits')
+randoms = Catalog.read("/pscratch/sd/l/lgong/pv_cov/Updated_Combined_AbacusSummit_clustering_randoms200.fits")
 # Any catalog filtering/manipulations should go here
 
 # The characteristic amplitude of the power spectrum
-P0_characteristic = 5e9
+P0_characteristic = 5e8
 # Fractional distance uncertainty of the Fundamental Plane / Tully-Fisher relations
-sigma_dist = 0.2
+sigma_dist = 0.25
 # Nonlinear velocity dispersion in km/s
 sigma_v_nl = 300.0
 # Hubble constant in km/s/(Mpc/h), so that H0 * D is in km/s for D in Mpc/h
@@ -29,13 +28,13 @@ H0 = 100.0
 # Whether RA and Dec are in degrees.
 degree = True
 # The Nyquist wavelength of the window FFTs should be at least as large as the largest k-bin used in covariance calculations.
-kmax_window = 0.08
+kmax_window = 0.12
 # Multiply the box size inferred from the catalog by this factor to get the box size used in window FFTs.
 # Larger boxpad yields smaller k-fundamental.
 boxpad = 2.0
 # The ratio of the number of galaxies to the number of randoms. Should be used in covariance calculations to properly account
 # for shot noise.
-alpha = 0.05
+alpha = 0.005
 # Maixmum number of samples used in the Monte Carlo integration of the trispectrum covariance. Should be set to a large number for
 # accurate results, but can be reduced for faster tests.
 kmodes_sampled = 5000
@@ -43,15 +42,11 @@ kmodes_sampled = 5000
 # Comoving distance in Mpc/h
 distance = cosmo.comoving_radial_distance(randoms["Z"])
 
+# Directly compute the measured velocity uncertainty from random catalogs
+alpha_velocity = np.load("/pscratch/sd/l/lgong/pv_cov/conversion_factor_alpha_from_logdist_to_velocity_abacus_random200.npy")
 # Velocity variance <u^2(x)> in (km/s)^2: measurement uncertainty plus nonlinear velocity dispersion
-randoms["VAR_U"] = (sigma_dist * H0 * distance) ** 2 + sigma_v_nl**2
-
-# FKP weights for the momentum field (eq. 2.2)
-#randoms["WEIGHT_FKP"] = 1.0 / (randoms["VAR_U"] + Pp_characteristic * randoms["NZ"])  # type: ignore
-
-# Should define FKP weights column with this name
-# randoms["WEIGHT_FKP"] = 1.0 / (1.0 + P0_characteristic * randoms["NZ"])  # type: ignore  # FKP weights are optional
-#randoms["WEIGHT_FKP"] = np.ones_like(randoms["WEIGHT_FKP"])
+randoms["VAR_U"] = (randoms["LOGDIST_ERR"]/alpha_velocity)**2 + sigma_v_nl**2
+#randoms["VAR_U"] = (sigma_dist * H0 * distance) ** 2 + sigma_v_nl**2
 
 # Convert sky coordinates to cartesian using fiducial cosmology
 randoms["POSITION"] = mockfactory.utils.sky_to_cartesian(
@@ -79,9 +74,10 @@ geometry = thecov.geometry.BoxGeometry(
     nbar = 0.0027597553081437727
 )
 """
-kmin = 0.01
-kmax = 0.42 
-dk = 0.01
+dk = 0.009
+kmin = 1 * dk
+kmax = 44 * dk 
+
 
 # kmin, kmax, dk = 0.0, 0.5, 0.005
 
@@ -126,9 +122,9 @@ print(f"Available multipoles: {pk.ells}")
 print(f"Shot noise applied: {pk.shotnoise}")
 '''
 
-P0 = interp1d(kmode, P0, kind="cubic", bounds_error=True, fill_value=0.0)(gaussian.kmid)
-P2 = interp1d(kmode, P2, kind="cubic", bounds_error=True, fill_value=0.0)(gaussian.kmid)
-P4 = interp1d(kmode, P4, kind="cubic", bounds_error=True, fill_value=0.0)(gaussian.kmid)
+P0 = interp1d(kmode, P0, kind="cubic", bounds_error=False, fill_value="extrapolate")(gaussian.kmid)
+P2 = interp1d(kmode, P2, kind="cubic", bounds_error=False, fill_value="extrapolate")(gaussian.kmid)
+P4 = interp1d(kmode, P4, kind="cubic", bounds_error=False, fill_value="extrapolate")(gaussian.kmid)
 
 # Load input power spectra (P0, P2, P4) for the Gaussian covariance
 
@@ -173,4 +169,4 @@ covariance = gaussian + t0 + ssc
 
 covariance = gaussian
 
-np.save('/pscratch/sd/l/lgong/pv_cov/BGS_DESIY1_P0_P2_P4_Gaussian_cov_w_shotshoise_analytic_pv_kmax_win0.08_kmin0.01_dk0.01.npy', covariance.cov)
+np.save('/pscratch/sd/l/lgong/pv_cov/BGS_DESIY1_P0_P2_P4_Gaussian_analytic_cov_w_shotshoise_mock_like_kmax_win0.12_kmin0.009_dk0.009.npy', covariance.cov)
