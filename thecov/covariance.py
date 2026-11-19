@@ -99,7 +99,12 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             pk = self._pk[ell]
             if (not remove_shotnoise) and ell == 0:
                 self.logger.info(f"Adding shotnoise = {self.shotnoise} to ell = 0.")
-                return pk / pk_renorm + self.shotnoise
+                # Original (upstream) code, kept for reference. It added the shot noise (in the
+                # normalisation of the measured spectrum) to pk / pk_renorm:
+                # return pk / pk_renorm + self.shotnoise
+                # Both pk and self.shotnoise are in the normalisation of the measured power
+                # spectrum, so the shot noise is added before dividing by pk_renorm.
+                return (pk + self.shotnoise) / pk_renorm
             return pk / pk_renorm
         elif type(force_return) is not bool:
             return force_return * np.ones(self.kbins)
@@ -172,7 +177,11 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             Covariance matrix.
         """
 
-        # terms without the power spectrum have to be multiplied by its relative normalization pk_renorm
+        # Normalisation: get_pk returns P_meas / pk_renorm, i.e. the spectrum normalised by
+        # I22 of the randoms, which is the normalisation the window kernels assume. All three
+        # terms below are therefore in that normalisation, and _build_covariance_survey
+        # multiplies the whole matrix by (pk_renorm / I22)^2 once to convert it to the
+        # normalisation of the measured spectra. No term needs an extra pk_renorm factor.
         def func(ik, jk):
             assert self.alpha is not None, (
                 "Alpha is not set. Cannot compute covariance."
@@ -261,9 +270,18 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         covariance.set_ell_cov(0, 0, cov_array[:, :, 0])
         covariance.set_ell_cov(2, 2, cov_array[:, :, 1])
         covariance.set_ell_cov(4, 4, cov_array[:, :, 2])
-        covariance.set_ell_cov(0, 2, cov_array[:, :, 3])
-        covariance.set_ell_cov(0, 4, cov_array[:, :, 4])
-        covariance.set_ell_cov(2, 4, cov_array[:, :, 5])
+        # Original (upstream) code, kept for reference. It stored C^{l1 l2}(k1, k2) with l1 > l2
+        # as the (l2, l1) block without transposing it, i.e. transposed in k:
+        # covariance.set_ell_cov(0, 2, cov_array[:, :, 3])
+        # covariance.set_ell_cov(0, 4, cov_array[:, :, 4])
+        # covariance.set_ell_cov(2, 4, cov_array[:, :, 5])
+        # cov_array[..., 3:6] are C^{l1 l2}(k1, k2) for (l1, l2) = (2,0), (4,0), (4,2), with l1 the
+        # multipole at k1 (the row index), see SurveyGeometry._compute_window_kernel_row
+        # ([L0xL0, L2xL2, L4xL4, L2xL0, L4xL0, L4xL2]). Passing them as (l1, l2) lets set_ell_cov
+        # transpose them into the (l2, l1) blocks.
+        covariance.set_ell_cov(2, 0, cov_array[:, :, 3])
+        covariance.set_ell_cov(4, 0, cov_array[:, :, 4])
+        covariance.set_ell_cov(4, 2, cov_array[:, :, 5])
 
         return covariance
 
@@ -425,13 +443,24 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
 
         @np.vectorize
         def dlikelihood(alpha):
+            # Same terms as func in _compute_covariance_survey. _build_covariance_survey
+            # already applies (pk_renorm / I22)^2, so no extra pk_renorm factors here
+            # (consistent with get_dcov_dalpha below).
+            # Original (upstream) code, kept for reference. Its extra pk_renorm factors were
+            # applied on top of the (pk_renorm / I22)^2 of _build_covariance_survey:
+            # def cov_func(ik, jk):
+            #     return (
+            #         self._get_cosmic_variance_term(ik, jk)
+            #         + (1 + alpha) * self.pk_renorm * self._get_mixed_term(ik, jk)
+            #         + (1 + alpha) ** 2
+            #         * self.pk_renorm**2
+            #         * self._get_shotnoise_term(ik, jk)
+            #     )
             def cov_func(ik, jk):
                 return (
                     self._get_cosmic_variance_term(ik, jk)
-                    + (1 + alpha) * self.pk_renorm * self._get_mixed_term(ik, jk)
-                    + (1 + alpha) ** 2
-                    * self.pk_renorm**2
-                    * self._get_shotnoise_term(ik, jk)
+                    + (1 + alpha) * self._get_mixed_term(ik, jk)
+                    + (1 + alpha) ** 2 * self._get_shotnoise_term(ik, jk)
                 )
 
             get_dcov_dalpha = self._build_covariance_survey(
@@ -556,12 +585,16 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
             remove_shotnoise=remove_shotnoise, complex=False
         )
 
-        if set_shotnoise and self.geometry is not None:
-            self.set_shotnoise(shotnoise=pypower.shotnoise)
-
-        self.set_galaxy_pk_multipole(P0, 0, has_shotnoise=not remove_shotnoise)
-        self.set_galaxy_pk_multipole(P2, 2)
-        self.set_galaxy_pk_multipole(P4, 4)
+        # Original (upstream) code, kept for reference. set_shotnoise ran before alpha was set
+        # (AssertionError on a fresh object, or a stale alpha), and its pk_renorm was then
+        # overwritten by the wnorm-based value below; the multipoles used the stale values too.
+        # The same steps now come after alpha and pk_renorm are set (see below).
+        # if set_shotnoise and self.geometry is not None:
+        #     self.set_shotnoise(shotnoise=pypower.shotnoise)
+        #
+        # self.set_galaxy_pk_multipole(P0, 0, has_shotnoise=not remove_shotnoise)
+        # self.set_galaxy_pk_multipole(P2, 2)
+        # self.set_galaxy_pk_multipole(P4, 4)
 
         self.alpha = (
             pypower.attrs["sum_data_weights1"] / pypower.attrs["sum_randoms_weights1"]
@@ -573,10 +606,22 @@ class GaussianCovariance(base.PowerSpectrumMultipolesCovariance):
         assert I is not None, (
             "Geometry must have an I(22) method to compute power spectrum normalization."
         )
+        # Relative normalisation between pypower (wnorm) and thecov (I22 of the randoms):
+        # P_measured = pk_renorm * P_thecov. Set before set_shotnoise, which rescales it.
         self.pk_renorm = I("22") / pypower.wnorm * naverage
         self.logger.info(
             f"Renormalizing by a factor of {self.pk_renorm:.2f} to match pypower power spectrum normalization."
         )
+
+        # Optional: rescale pk_renorm so that the estimated shot noise matches pypower's.
+        # Needs alpha (shotnoise property) and the wnorm-based pk_renorm above, so it comes last.
+        if set_shotnoise:
+            self.set_shotnoise(shotnoise=pypower.shotnoise)
+
+        # Uses pk_renorm and alpha only if the monopole still contains shot noise.
+        self.set_galaxy_pk_multipole(P0, 0, has_shotnoise=not remove_shotnoise)
+        self.set_galaxy_pk_multipole(P2, 2)
+        self.set_galaxy_pk_multipole(P4, 4)
 
 
 class RegularTrispectrumCovariance(base.PowerSpectrumMultipolesCovariance):
