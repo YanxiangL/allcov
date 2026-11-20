@@ -20,7 +20,7 @@ randoms = Catalog.read("/pscratch/sd/l/lgong/pv_cov/Updated_Combined_AbacusSummi
 # The characteristic amplitude of the power spectrum
 P0_characteristic = 5e8
 # Fractional distance uncertainty of the Fundamental Plane / Tully-Fisher relations
-sigma_dist = 0.25
+sigma_dist = 0.27
 # Nonlinear velocity dispersion in km/s
 sigma_v_nl = 300.0
 # Hubble constant in km/s/(Mpc/h), so that H0 * D is in km/s for D in Mpc/h
@@ -28,7 +28,7 @@ H0 = 100.0
 # Whether RA and Dec are in degrees.
 degree = True
 # The Nyquist wavelength of the window FFTs should be at least as large as the largest k-bin used in covariance calculations.
-kmax_window = 0.12
+kmax_window = 0.08
 # Multiply the box size inferred from the catalog by this factor to get the box size used in window FFTs.
 # Larger boxpad yields smaller k-fundamental.
 boxpad = 2.0
@@ -43,10 +43,10 @@ kmodes_sampled = 5000
 distance = cosmo.comoving_radial_distance(randoms["Z"])
 
 # Directly compute the measured velocity uncertainty from random catalogs
-alpha_velocity = np.load("/pscratch/sd/l/lgong/pv_cov/conversion_factor_alpha_from_logdist_to_velocity_abacus_random200.npy")
+#alpha_velocity = np.load("/pscratch/sd/l/lgong/pv_cov/conversion_factor_alpha_from_logdist_to_velocity_abacus_random200.npy")
 # Velocity variance <u^2(x)> in (km/s)^2: measurement uncertainty plus nonlinear velocity dispersion
-randoms["VAR_U"] = (randoms["LOGDIST_ERR"]/alpha_velocity)**2 + sigma_v_nl**2
-#randoms["VAR_U"] = (sigma_dist * H0 * distance) ** 2 + sigma_v_nl**2
+#randoms["VAR_U"] = (randoms["LOGDIST_ERR"]/alpha_velocity)**2 + sigma_v_nl**2
+randoms["VAR_U"] = (sigma_dist * H0 * distance)**2 + sigma_v_nl**2
 
 # Convert sky coordinates to cartesian using fiducial cosmology
 randoms["POSITION"] = mockfactory.utils.sky_to_cartesian(
@@ -169,4 +169,4 @@ covariance = gaussian + t0 + ssc
 
 covariance = gaussian
 
-np.save('/pscratch/sd/l/lgong/pv_cov/BGS_DESIY1_P0_P2_P4_Gaussian_analytic_cov_w_shotshoise_mock_like_kmax_win0.12_kmin0.009_dk0.009.npy', covariance.cov)
+np.save('/pscratch/sd/l/lgong/pv_cov/BGS_DESIY1_P0_P2_P4_Gaussian_analytic_cov_w_shotshoise_mock_like_kmax_win0.08_kmin0.009_dk0.009_sigmadist0.27.npy', covariance.cov)
