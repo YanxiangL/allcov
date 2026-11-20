@@ -39,6 +39,10 @@ __pycache__/
 *.tex
 *.out
 *.zip
+*.bib
+*.sty
+*.bst
+*.log
 
 # Model power spectrum code; kept separate from thecov
 PS_code/
